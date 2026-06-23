@@ -45,7 +45,7 @@ export default async function SharedPage({ params, searchParams }: { params: Pro
       <header className="public-share-header"><div className="brand"><span className="brand-mark small"><Cloud size={20} /></span><span>Tow1</span></div><span>安全分享</span></header>
       <section className="public-share-content">
         <div className="breadcrumb"><Link href={`/s/${token}`}>{root.name}</Link>{current.id !== root.id ? <><ChevronRight size={15} /><span>{current.name}</span></> : null}</div>
-        <div className="share-title"><div><h1>{current.name}</h1><p>{root.kind === "file" ? "共享文件" : `${items.length} 个项目`}</p></div><span>有效期至 {new Date(share.expires_at).toLocaleString("zh-CN", { hour12: false })}</span></div>
+        <div className="share-title"><div><h1>{current.name}</h1><p>{root.kind === "file" ? "共享文件" : `${items.length} 个项目`}</p></div><div className="share-title-actions"><span>有效期至 {new Date(share.expires_at).toLocaleString("zh-CN", { hour12: false })}</span><a className="secondary-button compact-link" href={`/api/public/shares/${token}/download${current.id !== root.id ? `?folder=${current.id}` : ""}`}><Download size={16} />下载全部</a></div></div>
         {items.length ? <div className="file-grid public-file-grid">{items.map((item) => <article className="file-card" key={item.id}>
           {item.kind === "folder" ? <Link className="file-open" href={`/s/${token}?folder=${item.id}`} aria-label={`打开 ${item.name}`} /> : null}
           {item.kind === "file" ? <PublicPreviewButton item={item} token={token} /> : null}
