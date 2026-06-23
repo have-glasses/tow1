@@ -1,6 +1,7 @@
 import Link from "next/link";
 import { ChevronRight, Cloud, Download, File, FileImage, FileText, Folder, ShieldX } from "lucide-react";
 import ShareUnlockForm from "@/components/ShareUnlockForm";
+import { isImagePublic, PublicPreviewButton } from "@/components/PublicSharePreview";
 import { getItem, getShareByToken, itemBelongsToShare, listItems, type DriveItem } from "@/lib/db";
 import { hasShareAccess, isShareActive } from "@/lib/shares";
 
@@ -15,7 +16,7 @@ function formatBytes(bytes: number) {
 
 function itemIcon(item: DriveItem) {
   if (item.kind === "folder") return <Folder className="folder-icon" />;
-  if (item.mime_type?.startsWith("image/")) return <FileImage className="image-icon" />;
+  if (isImagePublic(item)) return <FileImage className="image-icon" />;
   if (item.mime_type?.includes("pdf") || item.mime_type?.startsWith("text/")) return <FileText className="document-icon" />;
   return <File className="file-icon" />;
 }
@@ -47,7 +48,10 @@ export default async function SharedPage({ params, searchParams }: { params: Pro
         <div className="share-title"><div><h1>{current.name}</h1><p>{root.kind === "file" ? "共享文件" : `${items.length} 个项目`}</p></div><span>有效期至 {new Date(share.expires_at).toLocaleString("zh-CN", { hour12: false })}</span></div>
         {items.length ? <div className="file-grid public-file-grid">{items.map((item) => <article className="file-card" key={item.id}>
           {item.kind === "folder" ? <Link className="file-open" href={`/s/${token}?folder=${item.id}`} aria-label={`打开 ${item.name}`} /> : null}
-          <div className="file-visual">{itemIcon(item)}</div>
+          {item.kind === "file" ? <PublicPreviewButton item={item} token={token} /> : null}
+          <div className={isImagePublic(item) ? "file-visual image-thumb" : "file-visual"}>
+            {isImagePublic(item) ? <img src={`/api/public/shares/${token}/files/${item.id}/preview`} alt="" loading="lazy" /> : itemIcon(item)}
+          </div>
           <div className="file-info"><strong title={item.name}>{item.name}</strong><span>{item.kind === "folder" ? "文件夹" : formatBytes(item.size_bytes)}</span></div>
           {item.kind === "file" ? <a className="public-download" href={`/api/public/shares/${token}/files/${item.id}`}><Download size={17} />下载</a> : null}
         </article>)}</div> : <div className="empty-state"><div className="empty-icon"><Folder /></div><h2>文件夹是空的</h2></div>}
