@@ -109,6 +109,15 @@ export async function getItem(id: string) {
   return result.rows[0] ? rowToItem(result.rows[0] as unknown as Record<string, unknown>) : null;
 }
 
+export async function listUploadingFiles(limit = 100) {
+  const db = await ensureSchema();
+  const result = await db.execute({
+    sql: "SELECT * FROM drive_items WHERE kind = 'file' AND status = 'uploading' ORDER BY created_at DESC LIMIT ?",
+    args: [limit]
+  });
+  return result.rows.map((row) => rowToItem(row as unknown as Record<string, unknown>));
+}
+
 export async function createFolder(id: string, name: string, parentId: string | null) {
   const db = await ensureSchema();
   const now = new Date().toISOString();

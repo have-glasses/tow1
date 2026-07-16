@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import {
   ArchiveRestore, ChevronRight, Cloud, Download, File, FileImage, FileText,
@@ -111,9 +111,57 @@ export default function DriveWorkspace({ items, parent, trash, stats }: Props) {
   const [sharing, setSharing] = useState<DriveItem | null>(null);
   const [previewing, setPreviewing] = useState<DriveItem | null>(null);
   const [uploads, setUploads] = useState<UploadState[]>([]);
+  const [uploading, setUploading] = useState(false);
   const visibleItems = useMemo(() => items.filter((item) => item.name.toLowerCase().includes(query.toLowerCase())), [items, query]);
   const remainingBytes = stats.quotaBytes === null ? null : Math.max(0, stats.quotaBytes - stats.used);
   const usedPercent = stats.quotaBytes ? Math.min(100, Math.round(stats.used / stats.quotaBytes * 100)) : null;
+
+  useEffect(() => {
+    let cancelled = false;
+
+    async function repairUploads() {
+      try {
+        const response = await fetch("/api/uploads/repair", { method: "POST" });
+        const payload = await response.json().catch(() => null) as { repaired?: number } | null;
+        if (!cancelled && response.ok && payload?.repaired) router.refresh();
+      } catch {
+        // Repair is opportunistic; normal page loading should not depend on it.
+      }
+    }
+
+    repairUploads();
+    return () => { cancelled = true; };
+  }, [router]);
+
+  useEffect(() => {
+    if (!uploading) return;
+
+    function warnBeforeUnload(event: BeforeUnloadEvent) {
+      event.preventDefault();
+      event.returnValue = "";
+    }
+
+    function warnBeforeNavigation(event: globalThis.MouseEvent) {
+      const target = event.target instanceof Element ? event.target : null;
+      const anchor = target?.closest("a[href]") as HTMLAnchorElement | null;
+      if (!anchor || anchor.hasAttribute("download") || anchor.target === "_blank") return;
+
+      const url = new URL(anchor.href, window.location.href);
+      if (url.origin !== window.location.origin || (url.pathname === window.location.pathname && url.search === window.location.search)) return;
+
+      if (!window.confirm("文件正在上传，离开当前页面会中断上传。确定要离开吗？")) {
+        event.preventDefault();
+        event.stopPropagation();
+      }
+    }
+
+    window.addEventListener("beforeunload", warnBeforeUnload);
+    document.addEventListener("click", warnBeforeNavigation, true);
+    return () => {
+      window.removeEventListener("beforeunload", warnBeforeUnload);
+      document.removeEventListener("click", warnBeforeNavigation, true);
+    };
+  }, [uploading]);
 
   async function saveFolder(formData: FormData) {
     await createFolderAction(formData);
@@ -134,6 +182,8 @@ export default function DriveWorkspace({ items, parent, trash, stats }: Props) {
     if (!files?.length) return;
     const selected = Array.from(files);
     setUploads(selected.map((file) => ({ name: file.name, progress: 0 })));
+    setUploading(true);
+    try {
     for (const [index, file] of selected.entries()) {
       try {
         const prepared = await fetch("/api/uploads/prepare", {
@@ -152,6 +202,9 @@ export default function DriveWorkspace({ items, parent, trash, stats }: Props) {
     router.refresh();
     if (picker.current) picker.current.value = "";
     window.setTimeout(() => setUploads((current) => current.filter((entry) => entry.error)), 1200);
+    } finally {
+      setUploading(false);
+    }
   }
 
   return (

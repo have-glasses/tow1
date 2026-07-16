@@ -17,7 +17,7 @@ function sha1(value: string) { return crypto.createHash("sha1").update(value).di
 function hmac(key: string, value: string) { return crypto.createHmac("sha1", key).update(value).digest("hex"); }
 function encode(value: string) { return encodeURIComponent(value).replace(/[!'()*]/g, (c) => `%${c.charCodeAt(0).toString(16).toUpperCase()}`); }
 
-function signedUrl(method: "delete" | "get" | "put", key: string, lifetimeSeconds: number) {
+function signedUrl(method: "delete" | "get" | "head" | "put", key: string, lifetimeSeconds: number) {
   const value = config();
   const host = `${value.bucket}.cos.${value.region}.myqcloud.com`;
   const canonicalPath = `/${key}`;
@@ -47,5 +47,6 @@ export function createStorageKey(itemId: string) {
 }
 
 export function createUploadUrl(key: string) { return signedUrl("put", key, 15 * 60); }
+export function createHeadUrl(key: string) { return signedUrl("head", key, 5 * 60); }
 export function createDownloadUrl(key: string) { return signedUrl("get", key, 5 * 60); }
 export function createDeleteUrl(key: string) { return signedUrl("delete", key, 5 * 60); }
