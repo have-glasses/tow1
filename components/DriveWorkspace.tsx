@@ -4,9 +4,9 @@ import Link from "next/link";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import {
-  ArchiveRestore, ChevronRight, Cloud, Download, File, FileImage, FileText,
-  Folder, FolderPlus, HardDrive, Home, LogOut, MoreHorizontal, Search,
-  Share2, Trash2, Upload, X
+  ArchiveRestore, ChevronRight, Cloud, Download, File, FileAudio, FileImage,
+  FileText, FileVideo, Folder, FolderPlus, HardDrive, Home, LogOut,
+  MoreHorizontal, Play, Search, Share2, Trash2, Upload, X
 } from "lucide-react";
 import type { DriveItem } from "@/lib/db";
 import { createFolderAction, logoutAction, permanentlyDeleteItemAction, renameItemAction, restoreItemAction, trashItemAction } from "@/app/actions";
@@ -33,6 +33,8 @@ function formatBytes(bytes: number) {
 function fileIcon(item: DriveItem) {
   if (item.kind === "folder") return <Folder className="folder-icon" />;
   if (isImage(item)) return <FileImage className="image-icon" />;
+  if (isVideo(item)) return <FileVideo className="video-icon" />;
+  if (isAudio(item)) return <FileAudio className="audio-icon" />;
   if (item.mime_type?.includes("pdf") || item.mime_type?.startsWith("text/")) return <FileText className="document-icon" />;
   return <File className="file-icon" />;
 }
@@ -45,12 +47,20 @@ function isImage(item: DriveItem) {
   return Boolean(item.mime_type?.startsWith("image/")) || ["jpg", "jpeg", "png", "gif", "webp", "bmp", "svg", "avif"].includes(extension(item));
 }
 
+function isVideo(item: DriveItem) {
+  return Boolean(item.mime_type?.startsWith("video/")) || ["mp4", "webm", "mov"].includes(extension(item));
+}
+
+function isAudio(item: DriveItem) {
+  return Boolean(item.mime_type?.startsWith("audio/")) || ["mp3", "wav", "ogg", "m4a"].includes(extension(item));
+}
+
 function previewKind(item: DriveItem) {
   const type = item.mime_type || "";
   const ext = extension(item);
   if (isImage(item)) return "image";
-  if (type.startsWith("video/") || ["mp4", "webm", "mov"].includes(ext)) return "video";
-  if (type.startsWith("audio/") || ["mp3", "wav", "ogg", "m4a"].includes(ext)) return "audio";
+  if (isVideo(item)) return "video";
+  if (isAudio(item)) return "audio";
   if (type.startsWith("text/") || ["txt", "md", "csv", "json", "log"].includes(ext)) return "text";
   if (type === "application/pdf" || ext === "pdf") return "pdf";
   return null;
@@ -77,7 +87,7 @@ function PreviewDialog({ item, onClose }: { item: DriveItem; onClose: () => void
           {kind === "image" ? <img src={previewUrl} alt={item.name} /> : null}
           {kind === "pdf" ? <iframe src={previewUrl} title={item.name} /> : null}
           {kind === "text" ? <iframe src={previewUrl} title={item.name} /> : null}
-          {kind === "video" ? <video src={previewUrl} controls /> : null}
+          {kind === "video" ? <video src={previewUrl} controls autoPlay playsInline /> : null}
           {kind === "audio" ? <audio src={previewUrl} controls /> : null}
         </div>
         <div className="modal-actions">
@@ -100,6 +110,22 @@ function putFile(url: string, file: globalThis.File, onProgress: (value: number)
     xhr.onerror = () => reject(new Error("无法连接文件存储，请检查 COS 跨域设置"));
     xhr.send(file);
   });
+}
+
+function VideoTilePreview({ item }: { item: DriveItem }) {
+  const previewUrl = `/api/files/${item.id}/preview`;
+
+  return (
+    <div className="file-visual video-thumb">
+      <video
+        src={previewUrl}
+        preload="metadata"
+        muted
+        playsInline
+      />
+      <span className="play-badge" aria-hidden="true"><Play size={16} fill="currentColor" /></span>
+    </div>
+  );
 }
 
 export default function DriveWorkspace({ items, parent, trash, stats }: Props) {
@@ -245,12 +271,27 @@ export default function DriveWorkspace({ items, parent, trash, stats }: Props) {
           {visibleItems.length ? (
             <div className="file-grid">
               {visibleItems.map((item) => (
-                <article className="file-card" key={item.id}>
+                <article
+                  className="file-card"
+                  key={item.id}
+                  onMouseEnter={(event) => {
+                    if (!isVideo(item) || trash) return;
+                    event.currentTarget.querySelector("video")?.play().catch(() => undefined);
+                  }}
+                  onMouseLeave={(event) => {
+                    const video = event.currentTarget.querySelector("video");
+                    if (!video) return;
+                    video.pause();
+                    video.currentTime = 0;
+                  }}
+                >
                   {item.kind === "folder" && !trash ? <Link className="file-open" href={`/?folder=${item.id}`} aria-label={`打开 ${item.name}`} /> : null}
                   {item.kind === "file" && !trash && canPreview(item) ? <button className="file-open preview-open" onClick={() => setPreviewing(item)} aria-label={`预览 ${item.name}`} /> : null}
-                  <div className={isImage(item) && !trash ? "file-visual image-thumb" : "file-visual"}>
-                    {isImage(item) && !trash ? <img src={`/api/files/${item.id}/preview`} alt="" loading="lazy" /> : fileIcon(item)}
-                  </div>
+                  {isVideo(item) && !trash ? <VideoTilePreview item={item} /> : (
+                    <div className={isImage(item) && !trash ? "file-visual image-thumb" : "file-visual"}>
+                      {isImage(item) && !trash ? <img src={`/api/files/${item.id}/preview`} alt="" loading="lazy" /> : fileIcon(item)}
+                    </div>
+                  )}
                   <div className="file-info"><strong title={item.name}>{item.name}</strong><span>{item.kind === "folder" ? "文件夹" : formatBytes(item.size_bytes)}</span></div>
                   <div className="item-actions">
                     {trash ? (

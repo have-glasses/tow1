@@ -1,11 +1,9 @@
 "use client";
 
 import { useState } from "react";
-import { useRouter } from "next/navigation";
 import { KeyRound, LockKeyhole } from "lucide-react";
 
 export default function ShareUnlockForm({ token, itemName, expiresAt }: { token: string; itemName: string; expiresAt: string }) {
-  const router = useRouter();
   const [password, setPassword] = useState("");
   const [error, setError] = useState("");
   const [pending, setPending] = useState(false);
@@ -22,7 +20,7 @@ export default function ShareUnlockForm({ token, itemName, expiresAt }: { token:
       });
       const result = await response.json();
       if (!response.ok) throw new Error(result.error || "无法打开分享");
-      router.refresh();
+      window.location.reload();
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "无法打开分享");
     } finally {
