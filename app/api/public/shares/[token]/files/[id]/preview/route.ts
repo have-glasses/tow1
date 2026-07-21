@@ -14,6 +14,20 @@ function isPreviewable(mimeType: string | null, name: string) {
     ["jpg", "jpeg", "png", "gif", "webp", "bmp", "svg", "avif", "mp4", "webm", "mov", "mp3", "wav", "ogg", "m4a", "txt", "md", "csv", "json", "log", "pdf"].includes(ext);
 }
 
+function isStreamableMedia(mimeType: string | null, name: string) {
+  const value = mimeType || "";
+  return value.startsWith("video/") || value.startsWith("audio/") || ["mp4", "webm", "mov", "mp3", "wav", "ogg", "m4a"].includes(extension(name));
+}
+
+function boundedRange(range: string | null) {
+  const chunkSize = 2 * 1024 * 1024;
+  const match = range?.match(/^bytes=(\d+)-(\d*)$/i);
+  const start = match ? Number(match[1]) : 0;
+  const requestedEnd = match?.[2] ? Number(match[2]) : Number.POSITIVE_INFINITY;
+  const end = Math.max(start, Math.min(requestedEnd, start + chunkSize - 1));
+  return `bytes=${start}-${end}`;
+}
+
 function contentType(mimeType: string | null, name: string, upstreamType: string | null) {
   if (mimeType && mimeType !== "application/octet-stream") return mimeType;
   const ext = extension(name);
@@ -37,7 +51,8 @@ export async function GET(request: Request, context: { params: Promise<{ token: 
   if (!isPreviewable(item.mime_type, item.name)) return NextResponse.json({ error: "此文件暂不支持预览" }, { status: 415 });
 
   const range = request.headers.get("range");
-  const upstream = await fetch(createDownloadUrl(item.storage_key), { headers: range ? { range } : undefined });
+  const upstreamRange = isStreamableMedia(item.mime_type, item.name) ? boundedRange(range) : range;
+  const upstream = await fetch(createDownloadUrl(item.storage_key), { headers: upstreamRange ? { range: upstreamRange } : undefined });
   if (!upstream.ok && upstream.status !== 206) return NextResponse.json({ error: "无法读取文件预览" }, { status: upstream.status || 502 });
 
   const headers = new Headers();
