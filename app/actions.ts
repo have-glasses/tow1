@@ -54,9 +54,11 @@ export async function permanentlyDeleteItemAction(formData: FormData) {
   const root = items.find((item) => item.id === id);
   if (!root || root.status !== "trashed") throw new Error("只能永久删除回收站里的项目");
   for (const item of items) {
-    if (item.kind !== "file" || !item.storage_key) continue;
-    const response = await fetch(createDeleteUrl(item.storage_key), { method: "DELETE" });
-    if (!response.ok && response.status !== 404) throw new Error(`无法删除存储文件：${item.name}`);
+    const storageKeys = [item.storage_key, item.cover_storage_key].filter((key): key is string => Boolean(key));
+    for (const storageKey of storageKeys) {
+      const response = await fetch(createDeleteUrl(storageKey), { method: "DELETE" });
+      if (!response.ok && response.status !== 404) throw new Error(`无法删除存储文件：${item.name}`);
+    }
   }
   await permanentlyDeleteItems(items.map((item) => item.id));
   revalidatePath("/");

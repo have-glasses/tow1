@@ -21,7 +21,10 @@ export const viewport: Viewport = {
 
 export default function RootLayout({ children }: Readonly<{ children: React.ReactNode }>) {
   return (
-    <html lang="zh-CN">
+    <html lang="zh-CN" suppressHydrationWarning>
+      <head>
+        <script dangerouslySetInnerHTML={{ __html: `(function(){try{var t=localStorage.getItem('tow1:theme');if(['forest','ocean','violet','sand'].includes(t))document.documentElement.dataset.theme=t}catch(e){}})()` }} />
+      </head>
       <body>
         {children}
         <ServiceWorkerRegistration />

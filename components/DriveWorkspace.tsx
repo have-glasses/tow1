@@ -4,13 +4,15 @@ import Link from "next/link";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import {
-  ArchiveRestore, ChevronRight, Cloud, Download, File, FileAudio, FileImage,
-  FileText, FileVideo, Folder, FolderPlus, HardDrive, Home, LogOut,
+  ArchiveRestore, ChevronRight, Cloud, Download, ImagePlus,
+  Folder, FolderPlus, HardDrive, Home, LogOut,
   MoreHorizontal, Play, Search, Share2, Trash2, Upload, X
 } from "lucide-react";
 import type { DriveItem } from "@/lib/db";
 import { createFolderAction, logoutAction, permanentlyDeleteItemAction, renameItemAction, restoreItemAction, trashItemAction } from "@/app/actions";
 import ShareDialog from "./ShareDialog";
+import { FileTypeIcon, isAudioFile, isImageFile, isVideoFile } from "./FileTypeIcon";
+import ThemeSwitcher from "./ThemeSwitcher";
 
 type Props = {
   items: DriveItem[];
@@ -19,7 +21,12 @@ type Props = {
   stats: { used: number; count: number; quotaBytes: number | null };
 };
 
-type UploadState = { name: string; progress: number; error?: string };
+type UploadState = { name: string; progress: number; error?: string; note?: string };
+type UploadedPart = { partNumber: number; size: number };
+type UploadSession = { id: string; name: string; size: number; lastModified: number; parentId: string | null; partSize: number };
+type PreparePayload = { id: string; partSize: number; uploadedParts?: UploadedPart[]; error?: string };
+
+const UPLOAD_SESSION_KEY = "tow1:upload-sessions";
 
 function formatBytes(bytes: number) {
   if (bytes < 1024) return `${bytes} B`;
@@ -30,29 +37,20 @@ function formatBytes(bytes: number) {
   return `${value >= 10 ? value.toFixed(0) : value.toFixed(1)} ${unit}`;
 }
 
-function fileIcon(item: DriveItem) {
-  if (item.kind === "folder") return <Folder className="folder-icon" />;
-  if (isImage(item)) return <FileImage className="image-icon" />;
-  if (isVideo(item)) return <FileVideo className="video-icon" />;
-  if (isAudio(item)) return <FileAudio className="audio-icon" />;
-  if (item.mime_type?.includes("pdf") || item.mime_type?.startsWith("text/")) return <FileText className="document-icon" />;
-  return <File className="file-icon" />;
-}
-
 function extension(item: DriveItem) {
   return item.name.split(".").pop()?.toLowerCase() || "";
 }
 
 function isImage(item: DriveItem) {
-  return Boolean(item.mime_type?.startsWith("image/")) || ["jpg", "jpeg", "png", "gif", "webp", "bmp", "svg", "avif"].includes(extension(item));
+  return isImageFile(item);
 }
 
 function isVideo(item: DriveItem) {
-  return Boolean(item.mime_type?.startsWith("video/")) || ["mp4", "webm", "mov"].includes(extension(item));
+  return isVideoFile(item);
 }
 
 function isAudio(item: DriveItem) {
-  return Boolean(item.mime_type?.startsWith("audio/")) || ["mp3", "wav", "ogg", "m4a"].includes(extension(item));
+  return isAudioFile(item);
 }
 
 function previewKind(item: DriveItem) {
@@ -99,17 +97,44 @@ function PreviewDialog({ item, onClose }: { item: DriveItem; onClose: () => void
   );
 }
 
-function putFile(url: string, file: globalThis.File, onProgress: (value: number) => void) {
+function uploadBlob(url: string, blob: Blob, onProgress: (loaded: number) => void, contentType = "application/octet-stream") {
   return new Promise<void>((resolve, reject) => {
     const xhr = new XMLHttpRequest();
     xhr.open("PUT", url);
-    xhr.setRequestHeader("Content-Type", file.type || "application/octet-stream");
-    xhr.setRequestHeader("Content-Disposition", `attachment; filename*=UTF-8''${encodeURIComponent(file.name)}`);
-    xhr.upload.onprogress = (event) => event.lengthComputable && onProgress(Math.round(event.loaded / event.total * 100));
+    xhr.setRequestHeader("Content-Type", contentType);
+    xhr.upload.onprogress = (event) => event.lengthComputable && onProgress(event.loaded);
     xhr.onload = () => xhr.status >= 200 && xhr.status < 300 ? resolve() : reject(new Error(`COS 返回 ${xhr.status}`));
     xhr.onerror = () => reject(new Error("无法连接文件存储，请检查 COS 跨域设置"));
-    xhr.send(file);
+    xhr.send(blob);
   });
+}
+
+function sessionKey(file: globalThis.File, parentId: string | null) {
+  return `${parentId || "root"}:${file.name}:${file.size}:${file.lastModified}`;
+}
+
+function readUploadSessions() {
+  try {
+    return JSON.parse(localStorage.getItem(UPLOAD_SESSION_KEY) || "{}") as Record<string, UploadSession>;
+  } catch {
+    return {};
+  }
+}
+
+function writeUploadSession(key: string, session: UploadSession) {
+  const sessions = readUploadSessions();
+  sessions[key] = session;
+  localStorage.setItem(UPLOAD_SESSION_KEY, JSON.stringify(sessions));
+}
+
+function deleteUploadSession(key: string) {
+  const sessions = readUploadSessions();
+  delete sessions[key];
+  localStorage.setItem(UPLOAD_SESSION_KEY, JSON.stringify(sessions));
+}
+
+function videoThumbnailTime(video: HTMLVideoElement) {
+  return Number.isFinite(video.duration) ? Math.min(0.5, Math.max(0.05, video.duration * 0.05)) : 0.1;
 }
 
 function VideoTilePreview({ item }: { item: DriveItem }) {
@@ -122,6 +147,7 @@ function VideoTilePreview({ item }: { item: DriveItem }) {
         preload="metadata"
         muted
         playsInline
+        onLoadedMetadata={(event) => { event.currentTarget.currentTime = videoThumbnailTime(event.currentTarget); }}
       />
       <span className="play-badge" aria-hidden="true"><Play size={16} fill="currentColor" /></span>
     </div>
@@ -131,6 +157,7 @@ function VideoTilePreview({ item }: { item: DriveItem }) {
 export default function DriveWorkspace({ items, parent, trash, stats }: Props) {
   const router = useRouter();
   const picker = useRef<HTMLInputElement>(null);
+  const coverPicker = useRef<HTMLInputElement>(null);
   const [query, setQuery] = useState("");
   const [showFolder, setShowFolder] = useState(false);
   const [renaming, setRenaming] = useState<DriveItem | null>(null);
@@ -138,6 +165,8 @@ export default function DriveWorkspace({ items, parent, trash, stats }: Props) {
   const [previewing, setPreviewing] = useState<DriveItem | null>(null);
   const [uploads, setUploads] = useState<UploadState[]>([]);
   const [uploading, setUploading] = useState(false);
+  const [coverBusy, setCoverBusy] = useState(false);
+  const [coverError, setCoverError] = useState("");
   const visibleItems = useMemo(() => items.filter((item) => item.name.toLowerCase().includes(query.toLowerCase())), [items, query]);
   const remainingBytes = stats.quotaBytes === null ? null : Math.max(0, stats.quotaBytes - stats.used);
   const usedPercent = stats.quotaBytes ? Math.min(100, Math.round(stats.used / stats.quotaBytes * 100)) : null;
@@ -158,6 +187,14 @@ export default function DriveWorkspace({ items, parent, trash, stats }: Props) {
     repairUploads();
     return () => { cancelled = true; };
   }, [router]);
+
+  useEffect(() => {
+    const parentId = parent?.id || null;
+    const pending = Object.values(readUploadSessions()).filter((session) => session.parentId === parentId);
+    if (pending.length) {
+      setUploads(pending.map((session) => ({ name: session.name, progress: 0, note: "重新选择同一文件继续" })));
+    }
+  }, [parent?.id]);
 
   useEffect(() => {
     if (!uploading) return;
@@ -204,30 +241,138 @@ export default function DriveWorkspace({ items, parent, trash, stats }: Props) {
     setRenaming(null);
   }
 
+  async function uploadFolderCover(files: FileList | null) {
+    const file = files?.[0];
+    const folder = renaming;
+    if (!file || folder?.kind !== "folder") return;
+    setCoverBusy(true);
+    setCoverError("");
+    try {
+      const prepared = await fetch(`/api/folders/${folder.id}/cover`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ stage: "prepare", type: file.type, size: file.size })
+      });
+      const preparedPayload = await prepared.json() as { uploadUrl?: string; error?: string };
+      if (!prepared.ok || !preparedPayload.uploadUrl) throw new Error(preparedPayload.error || "无法上传封面");
+      await uploadBlob(preparedPayload.uploadUrl, file, () => undefined, file.type);
+      const completed = await fetch(`/api/folders/${folder.id}/cover`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ stage: "complete" })
+      });
+      const completedPayload = await completed.json().catch(() => ({})) as { error?: string };
+      if (!completed.ok) throw new Error(completedPayload.error || "封面保存失败");
+      setRenaming(null);
+      router.refresh();
+    } catch (error) {
+      setCoverError(error instanceof Error ? error.message : "封面上传失败");
+    } finally {
+      setCoverBusy(false);
+      if (coverPicker.current) coverPicker.current.value = "";
+    }
+  }
+
+  async function removeFolderCover() {
+    const folder = renaming;
+    if (folder?.kind !== "folder") return;
+    setCoverBusy(true);
+    setCoverError("");
+    try {
+      const response = await fetch(`/api/folders/${folder.id}/cover`, { method: "DELETE" });
+      const payload = await response.json().catch(() => ({})) as { error?: string };
+      if (!response.ok) throw new Error(payload.error || "无法恢复默认封面");
+      setRenaming(null);
+      router.refresh();
+    } catch (error) {
+      setCoverError(error instanceof Error ? error.message : "无法恢复默认封面");
+    } finally {
+      setCoverBusy(false);
+    }
+  }
+
+  function updateUploadProgress(index: number, progress: number, note?: string) {
+    const nextProgress = Math.max(0, Math.min(99, Math.floor(progress)));
+    setUploads((current) => current.map((entry, i) => i === index ? {
+      ...entry,
+      progress: Math.max(entry.progress, nextProgress),
+      note
+    } : entry));
+  }
+
+  async function uploadFileInParts(file: globalThis.File, index: number) {
+    const parentId = parent?.id || null;
+    const key = sessionKey(file, parentId);
+    const saved = readUploadSessions()[key];
+    const prepared = await fetch("/api/uploads/prepare", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name: file.name, type: file.type, size: file.size, lastModified: file.lastModified, parentId })
+    });
+    const payload = await prepared.json() as PreparePayload;
+    if (!prepared.ok) throw new Error(payload.error || "无法开始上传");
+
+    const partSize = payload.partSize;
+    writeUploadSession(key, { id: payload.id, name: file.name, size: file.size, lastModified: file.lastModified, parentId, partSize });
+    const status = saved?.id === payload.id
+      ? await fetch("/api/uploads/status", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ id: payload.id })
+        }).then((response) => response.ok ? response.json() as Promise<PreparePayload> : payload).catch(() => payload)
+      : payload;
+
+    const uploadedParts = new Map((status.uploadedParts || payload.uploadedParts || []).map((part) => [part.partNumber, part.size]));
+    let uploadedBytes = Array.from(uploadedParts.values()).reduce((total, size) => total + size, 0);
+    updateUploadProgress(index, uploadedBytes / file.size * 100, uploadedBytes ? "续传中" : undefined);
+
+    const partCount = Math.ceil(file.size / partSize);
+    for (let partNumber = 1; partNumber <= partCount; partNumber += 1) {
+      if (uploadedParts.has(partNumber)) continue;
+      const start = (partNumber - 1) * partSize;
+      const end = Math.min(file.size, start + partSize);
+      const signed = await fetch("/api/uploads/part-url", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ id: payload.id, partNumber })
+      });
+      const signedPayload = await signed.json() as { uploadUrl?: string; error?: string };
+      if (!signed.ok || !signedPayload.uploadUrl) throw new Error(signedPayload.error || "无法继续上传分片");
+      const part = file.slice(start, end);
+      await uploadBlob(signedPayload.uploadUrl, part, (loaded) => {
+        updateUploadProgress(index, (uploadedBytes + loaded) / file.size * 100, partNumber > 1 ? "续传中" : undefined);
+      });
+      uploadedBytes += part.size;
+      updateUploadProgress(index, uploadedBytes / file.size * 100, "续传中");
+    }
+
+    const completed = await fetch("/api/uploads/complete", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ id: payload.id })
+    });
+    const completePayload = await completed.json().catch(() => ({})) as { error?: string };
+    if (!completed.ok) throw new Error(completePayload.error || "文件已上传，但保存记录失败");
+    deleteUploadSession(key);
+    setUploads((current) => current.map((entry, i) => i === index ? { ...entry, progress: 100, note: undefined } : entry));
+  }
+
   async function uploadFiles(files: FileList | null) {
     if (!files?.length) return;
     const selected = Array.from(files);
     setUploads(selected.map((file) => ({ name: file.name, progress: 0 })));
     setUploading(true);
     try {
-    for (const [index, file] of selected.entries()) {
-      try {
-        const prepared = await fetch("/api/uploads/prepare", {
-          method: "POST", headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ name: file.name, type: file.type, size: file.size, parentId: parent?.id || null })
-        });
-        const payload = await prepared.json();
-        if (!prepared.ok) throw new Error(payload.error || "无法开始上传");
-        await putFile(payload.uploadUrl, file, (progress) => setUploads((current) => current.map((entry, i) => i === index ? { ...entry, progress } : entry)));
-        const completed = await fetch("/api/uploads/complete", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ id: payload.id }) });
-        if (!completed.ok) throw new Error("文件已上传，但保存记录失败");
-      } catch (error) {
-        setUploads((current) => current.map((entry, i) => i === index ? { ...entry, error: error instanceof Error ? error.message : "上传失败" } : entry));
+      for (const [index, file] of selected.entries()) {
+        try {
+          await uploadFileInParts(file, index);
+        } catch (error) {
+          setUploads((current) => current.map((entry, i) => i === index ? { ...entry, error: error instanceof Error ? error.message : "上传失败，可重新选择同一文件继续" } : entry));
+        }
       }
-    }
-    router.refresh();
-    if (picker.current) picker.current.value = "";
-    window.setTimeout(() => setUploads((current) => current.filter((entry) => entry.error)), 1200);
+      router.refresh();
+      if (picker.current) picker.current.value = "";
+      window.setTimeout(() => setUploads((current) => current.filter((entry) => entry.error)), 1200);
     } finally {
       setUploading(false);
     }
@@ -253,11 +398,12 @@ export default function DriveWorkspace({ items, parent, trash, stats }: Props) {
       <main className="workspace">
         <header className="topbar">
           <div className="search"><Search size={18} /><input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="搜索当前文件夹" /></div>
-          {!trash ? <div className="top-actions">
-            <button className="secondary-button" onClick={() => setShowFolder(true)}><FolderPlus size={17} />新建文件夹</button>
-            <button className="primary-button compact" onClick={() => picker.current?.click()}><Upload size={17} />上传文件</button>
-            <input ref={picker} hidden type="file" multiple onChange={(e) => uploadFiles(e.target.files)} />
-          </div> : null}
+          <div className="top-actions">
+            <ThemeSwitcher />
+            {!trash ? <><button className="secondary-button" onClick={() => setShowFolder(true)}><FolderPlus size={17} />新建文件夹</button>
+              <button className="primary-button compact" onClick={() => picker.current?.click()}><Upload size={17} />上传文件</button>
+              <input ref={picker} hidden type="file" multiple onChange={(e) => uploadFiles(e.target.files)} /></> : null}
+          </div>
         </header>
 
         <section className="content">
@@ -282,14 +428,16 @@ export default function DriveWorkspace({ items, parent, trash, stats }: Props) {
                     const video = event.currentTarget.querySelector("video");
                     if (!video) return;
                     video.pause();
-                    video.currentTime = 0;
+                    video.currentTime = videoThumbnailTime(video);
                   }}
                 >
                   {item.kind === "folder" && !trash ? <Link className="file-open" href={`/?folder=${item.id}`} aria-label={`打开 ${item.name}`} /> : null}
                   {item.kind === "file" && !trash && canPreview(item) ? <button className="file-open preview-open" onClick={() => setPreviewing(item)} aria-label={`预览 ${item.name}`} /> : null}
-                  {isVideo(item) && !trash ? <VideoTilePreview item={item} /> : (
-                    <div className={isImage(item) && !trash ? "file-visual image-thumb" : "file-visual"}>
-                      {isImage(item) && !trash ? <img src={`/api/files/${item.id}/preview`} alt="" loading="lazy" /> : fileIcon(item)}
+                  {isVideo(item) ? <VideoTilePreview item={item} /> : (
+                    <div className={item.kind === "folder" && !trash ? "file-visual folder-thumb" : isImage(item) ? "file-visual image-thumb" : "file-visual"}>
+                      {item.kind === "folder" && item.cover_storage_key && !trash
+                        ? <img src={`/api/folders/${item.id}/cover?v=${encodeURIComponent(item.updated_at)}`} alt="" loading="lazy" />
+                        : isImage(item) ? <img src={`/api/files/${item.id}/preview`} alt="" loading="lazy" /> : <FileTypeIcon item={item} />}
                     </div>
                   )}
                   <div className="file-info"><strong title={item.name}>{item.name}</strong><span>{item.kind === "folder" ? "文件夹" : formatBytes(item.size_bytes)}</span></div>
@@ -301,7 +449,7 @@ export default function DriveWorkspace({ items, parent, trash, stats }: Props) {
                       </>
                     ) : <>
                       {item.kind === "file" ? <a href={`/api/files/${item.id}/download`} title="下载"><Download size={17} /></a> : null}
-                      <button title="更多" onClick={() => setRenaming(item)}><MoreHorizontal size={18} /></button>
+                      <button title="更多" onClick={() => { setCoverError(""); setRenaming(item); }}><MoreHorizontal size={18} /></button>
                     </>}
                   </div>
                 </article>
@@ -317,11 +465,11 @@ export default function DriveWorkspace({ items, parent, trash, stats }: Props) {
         </section>
       </main>
 
-      {uploads.length ? <div className="upload-panel"><div className="panel-title">上传任务<button onClick={() => setUploads([])}><X size={16} /></button></div>{uploads.map((item, index) => <div className="upload-row" key={`${item.name}-${index}`}><div><span>{item.name}</span><small>{item.error || `${item.progress}%`}</small></div><div className={item.error ? "progress error" : "progress"}><i style={{ width: `${item.progress}%` }} /></div></div>)}</div> : null}
+      {uploads.length ? <div className="upload-panel"><div className="panel-title">上传任务<button onClick={() => setUploads([])}><X size={16} /></button></div>{uploads.map((item, index) => <div className="upload-row" key={`${item.name}-${index}`}><div><span>{item.name}</span><small>{item.error || item.note || `${item.progress}%`}</small></div><div className={item.error ? "progress error" : "progress"}><i style={{ width: `${item.progress}%` }} /></div></div>)}</div> : null}
 
       {showFolder ? <div className="modal-backdrop" onMouseDown={() => setShowFolder(false)}><form action={saveFolder} className="modal" onMouseDown={(e) => e.stopPropagation()}><h2>新建文件夹</h2><input type="hidden" name="parentId" value={parent?.id || ""} /><label>文件夹名称<input name="name" autoFocus maxLength={180} required /></label><div className="modal-actions"><button type="button" className="text-button" onClick={() => setShowFolder(false)}>取消</button><button className="primary-button compact">创建</button></div></form></div> : null}
 
-      {renaming ? <div className="modal-backdrop" onMouseDown={() => setRenaming(null)}><form action={saveRename} className="modal" onMouseDown={(e) => e.stopPropagation()}><h2>管理项目</h2><input type="hidden" name="id" value={renaming.id} /><label>名称<input name="name" defaultValue={renaming.name} autoFocus maxLength={180} required /></label><div className="item-management-actions"><button type="button" className="secondary-button" onClick={() => { setSharing(renaming); setRenaming(null); }}><Share2 size={16} />分享</button><button formAction={moveToTrash} className="danger-button"><Trash2 size={16} />移入回收站</button></div><div className="modal-actions"><button type="button" className="text-button" onClick={() => setRenaming(null)}>取消</button><button className="primary-button compact">保存</button></div></form></div> : null}
+      {renaming ? <div className="modal-backdrop" onMouseDown={() => setRenaming(null)}><form action={saveRename} className="modal" onMouseDown={(e) => e.stopPropagation()}><h2>管理项目</h2><input type="hidden" name="id" value={renaming.id} /><label>名称<input name="name" defaultValue={renaming.name} autoFocus maxLength={180} required /></label>{renaming.kind === "folder" ? <div className="folder-cover-actions"><span>文件夹封面</span><div><button type="button" className="secondary-button" disabled={coverBusy} onClick={() => coverPicker.current?.click()}><ImagePlus size={16} />{renaming.cover_storage_key ? "更换图片" : "选择图片"}</button>{renaming.cover_storage_key ? <button type="button" className="text-button" disabled={coverBusy} onClick={removeFolderCover}>恢复默认</button> : null}</div><input ref={coverPicker} hidden type="file" accept="image/jpeg,image/png,image/webp,image/avif" onChange={(event) => uploadFolderCover(event.target.files)} />{coverError ? <p className="form-error">{coverError}</p> : null}</div> : null}<div className="item-management-actions"><button type="button" className="secondary-button" onClick={() => { setSharing(renaming); setRenaming(null); }}><Share2 size={16} />分享</button><button formAction={moveToTrash} className="danger-button"><Trash2 size={16} />移入回收站</button></div><div className="modal-actions"><button type="button" className="text-button" onClick={() => setRenaming(null)}>取消</button><button className="primary-button compact">保存</button></div></form></div> : null}
       {previewing ? <PreviewDialog item={previewing} onClose={() => setPreviewing(null)} /> : null}
       {sharing ? <ShareDialog item={sharing} onClose={() => setSharing(null)} /> : null}
     </div>

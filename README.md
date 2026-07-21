@@ -55,6 +55,7 @@ Vercel 部署后，必须在项目的 Environment Variables 里配置与 `.env.l
 - `NEXT_PUBLIC_APP_URL`
 - `NEXT_PUBLIC_MAX_UPLOAD_MB`
 - `NEXT_PUBLIC_STORAGE_QUOTA_GB`
+- `DRIVE_MAX_ZIP_MB`（分享文件夹打包下载的容量上限，默认 100MB）
 
 `NEXT_PUBLIC_APP_URL` 上线后应设置为你的正式访问地址，例如：
 

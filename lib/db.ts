@@ -8,6 +8,7 @@ export type DriveItem = {
   kind: "file" | "folder";
   name: string;
   storage_key: string | null;
+  cover_storage_key: string | null;
   mime_type: string | null;
   size_bytes: number;
   status: "uploading" | "active" | "trashed";
@@ -26,6 +27,15 @@ export type DriveShare = {
   download_count: number;
   last_accessed_at: string | null;
   created_at: string;
+};
+
+export type DriveUploadSession = {
+  item_id: string;
+  upload_id: string;
+  part_size: number;
+  file_last_modified: number | null;
+  created_at: string;
+  updated_at: string;
 };
 
 let client: Client | null = null;
@@ -60,6 +70,10 @@ async function ensureSchema() {
         trashed_at TEXT
       )`);
       await db.execute("CREATE INDEX IF NOT EXISTS idx_drive_items_parent ON drive_items(parent_id, status, kind, name)");
+      const itemColumns = await db.execute("PRAGMA table_info(drive_items)");
+      if (!itemColumns.rows.some((column) => String(column.name) === "cover_storage_key")) {
+        await db.execute("ALTER TABLE drive_items ADD COLUMN cover_storage_key TEXT");
+      }
       await db.execute(`CREATE TABLE IF NOT EXISTS drive_shares (
         id TEXT PRIMARY KEY,
         item_id TEXT NOT NULL,
@@ -80,6 +94,27 @@ async function ensureSchema() {
         blocked_until TEXT,
         PRIMARY KEY (share_id, client_key)
       )`);
+      await db.execute(`CREATE TABLE IF NOT EXISTS drive_upload_sessions (
+        item_id TEXT PRIMARY KEY,
+        upload_id TEXT NOT NULL,
+        part_size INTEGER NOT NULL,
+        file_last_modified INTEGER,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      )`);
+      await db.execute("CREATE INDEX IF NOT EXISTS idx_drive_upload_sessions_updated ON drive_upload_sessions(updated_at)");
+      await db.execute(`WITH RECURSIVE trashed_descendants(id, trashed_at) AS (
+        SELECT id, trashed_at FROM drive_items WHERE status = 'trashed'
+        UNION ALL
+        SELECT child.id, parent.trashed_at
+        FROM drive_items child JOIN trashed_descendants parent ON child.parent_id = parent.id
+        WHERE child.status = 'active'
+      )
+      UPDATE drive_items
+      SET status = 'trashed',
+          trashed_at = (SELECT tree.trashed_at FROM trashed_descendants tree WHERE tree.id = drive_items.id LIMIT 1),
+          updated_at = ?
+      WHERE status = 'active' AND id IN (SELECT id FROM trashed_descendants)`, [new Date().toISOString()]);
     })();
   }
   await initialized;
@@ -96,7 +131,13 @@ function rowToItem(row: Record<string, unknown>) {
 export async function listItems(parentId: string | null, trash = false) {
   const db = await ensureSchema();
   const result = trash
-    ? await db.execute({ sql: "SELECT * FROM drive_items WHERE status = 'trashed' ORDER BY trashed_at DESC", args: [] })
+    ? await db.execute({
+        sql: `SELECT item.* FROM drive_items item
+          LEFT JOIN drive_items parent ON parent.id = item.parent_id
+          WHERE item.status = 'trashed' AND (parent.id IS NULL OR parent.status != 'trashed')
+          ORDER BY item.trashed_at DESC`,
+        args: []
+      })
     : parentId
       ? await db.execute({ sql: "SELECT * FROM drive_items WHERE parent_id = ? AND status = 'active' ORDER BY kind DESC, name COLLATE NOCASE", args: [parentId] })
       : await db.execute({ sql: "SELECT * FROM drive_items WHERE parent_id IS NULL AND status = 'active' ORDER BY kind DESC, name COLLATE NOCASE", args: [] });
@@ -130,9 +171,63 @@ export async function reserveFile(input: { id: string; parentId: string | null; 
   await db.execute({ sql: "INSERT INTO drive_items (id, parent_id, kind, name, storage_key, mime_type, size_bytes, status, created_at, updated_at) VALUES (?, ?, 'file', ?, ?, ?, ?, 'uploading', ?, ?)", args: [input.id, input.parentId, input.name, input.storageKey, input.mimeType, input.sizeBytes, now, now] });
 }
 
+function rowToUploadSession(row: Record<string, unknown>) {
+  return {
+    ...row,
+    part_size: Number(row.part_size),
+    file_last_modified: row.file_last_modified === null ? null : Number(row.file_last_modified)
+  } as DriveUploadSession;
+}
+
+export async function createUploadSession(input: { itemId: string; uploadId: string; partSize: number; fileLastModified: number | null }) {
+  const db = await ensureSchema();
+  const now = new Date().toISOString();
+  await db.execute({
+    sql: "INSERT INTO drive_upload_sessions (item_id, upload_id, part_size, file_last_modified, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)",
+    args: [input.itemId, input.uploadId, input.partSize, input.fileLastModified, now, now]
+  });
+}
+
+export async function getUploadSession(itemId: string) {
+  const db = await ensureSchema();
+  const result = await db.execute({ sql: "SELECT * FROM drive_upload_sessions WHERE item_id = ? LIMIT 1", args: [itemId] });
+  return result.rows[0] ? rowToUploadSession(result.rows[0] as unknown as Record<string, unknown>) : null;
+}
+
+export async function findUploadSession(input: { parentId: string | null; name: string; sizeBytes: number; fileLastModified: number | null }) {
+  const db = await ensureSchema();
+  const result = input.parentId
+    ? await db.execute({
+        sql: `SELECT u.* FROM drive_upload_sessions u JOIN drive_items i ON i.id = u.item_id
+          WHERE i.parent_id = ? AND i.name = ? AND i.size_bytes = ? AND i.status = 'uploading'
+            AND (? IS NULL OR u.file_last_modified = ?)
+          ORDER BY u.updated_at DESC LIMIT 1`,
+        args: [input.parentId, input.name, input.sizeBytes, input.fileLastModified, input.fileLastModified]
+      })
+    : await db.execute({
+        sql: `SELECT u.* FROM drive_upload_sessions u JOIN drive_items i ON i.id = u.item_id
+          WHERE i.parent_id IS NULL AND i.name = ? AND i.size_bytes = ? AND i.status = 'uploading'
+            AND (? IS NULL OR u.file_last_modified = ?)
+          ORDER BY u.updated_at DESC LIMIT 1`,
+        args: [input.name, input.sizeBytes, input.fileLastModified, input.fileLastModified]
+      });
+  return result.rows[0] ? rowToUploadSession(result.rows[0] as unknown as Record<string, unknown>) : null;
+}
+
+export async function touchUploadSession(itemId: string) {
+  const db = await ensureSchema();
+  await db.execute({ sql: "UPDATE drive_upload_sessions SET updated_at = ? WHERE item_id = ?", args: [new Date().toISOString(), itemId] });
+}
+
+export async function deleteUploadSession(itemId: string) {
+  const db = await ensureSchema();
+  await db.execute({ sql: "DELETE FROM drive_upload_sessions WHERE item_id = ?", args: [itemId] });
+}
+
 export async function completeFile(id: string) {
   const db = await ensureSchema();
   await db.execute({ sql: "UPDATE drive_items SET status = 'active', updated_at = ? WHERE id = ? AND status = 'uploading'", args: [new Date().toISOString(), id] });
+  await deleteUploadSession(id);
 }
 
 export async function renameItem(id: string, name: string) {
@@ -140,15 +235,45 @@ export async function renameItem(id: string, name: string) {
   await db.execute({ sql: "UPDATE drive_items SET name = ?, updated_at = ? WHERE id = ? AND status = 'active'", args: [name, new Date().toISOString(), id] });
 }
 
+export async function setFolderCover(id: string, storageKey: string | null) {
+  const db = await ensureSchema();
+  await db.execute({
+    sql: "UPDATE drive_items SET cover_storage_key = ?, updated_at = ? WHERE id = ? AND kind = 'folder' AND status = 'active'",
+    args: [storageKey, new Date().toISOString(), id]
+  });
+}
+
 export async function trashItem(id: string) {
   const db = await ensureSchema();
   const now = new Date().toISOString();
-  await db.execute({ sql: "UPDATE drive_items SET status = 'trashed', trashed_at = ?, updated_at = ? WHERE id = ?", args: [now, now, id] });
+  await db.execute({
+    sql: `WITH RECURSIVE descendants(id) AS (
+      SELECT id FROM drive_items WHERE id = ? AND status = 'active'
+      UNION ALL
+      SELECT child.id FROM drive_items child JOIN descendants parent ON child.parent_id = parent.id WHERE child.status = 'active'
+    )
+    UPDATE drive_items SET status = 'trashed', trashed_at = ?, updated_at = ?
+    WHERE id IN (SELECT id FROM descendants) AND status = 'active'`,
+    args: [id, now, now]
+  });
 }
 
 export async function restoreItem(id: string) {
   const db = await ensureSchema();
-  await db.execute({ sql: "UPDATE drive_items SET status = 'active', trashed_at = NULL, updated_at = ? WHERE id = ?", args: [new Date().toISOString(), id] });
+  const root = await getItem(id);
+  if (!root || root.status !== "trashed" || !root.trashed_at) return;
+  const now = new Date().toISOString();
+  await db.execute({
+    sql: `WITH RECURSIVE descendants(id) AS (
+      SELECT id FROM drive_items WHERE id = ? AND status = 'trashed'
+      UNION ALL
+      SELECT child.id FROM drive_items child JOIN descendants parent ON child.parent_id = parent.id
+      WHERE child.status = 'trashed' AND child.trashed_at = ?
+    )
+    UPDATE drive_items SET status = 'active', trashed_at = NULL, updated_at = ?
+    WHERE id IN (SELECT id FROM descendants) AND status = 'trashed' AND trashed_at = ?`,
+    args: [id, root.trashed_at, now, root.trashed_at]
+  });
 }
 
 async function listChildren(parentId: string) {

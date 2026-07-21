@@ -36,6 +36,13 @@ export async function GET(request: Request, context: { params: Promise<{ token: 
   const fileRefs = target.kind === "file" ? [{ item: target, path: [target.name] }] : await collectFiles(target);
   if (!fileRefs.length) return NextResponse.json({ error: "没有可下载的文件" }, { status: 404 });
   if (fileRefs.length > 200) return NextResponse.json({ error: "文件过多，请进入子文件夹分批下载" }, { status: 413 });
+  const configuredMaxZipMb = Number(process.env.DRIVE_MAX_ZIP_MB || 100);
+  const maxZipMb = Number.isFinite(configuredMaxZipMb) && configuredMaxZipMb > 0 ? configuredMaxZipMb : 100;
+  const maxZipBytes = maxZipMb * 1024 * 1024;
+  const totalBytes = fileRefs.reduce((sum, ref) => sum + ref.item.size_bytes, 0);
+  if (totalBytes > maxZipBytes) {
+    return NextResponse.json({ error: `文件夹内容超过 ${maxZipMb} MB，请进入子文件夹分批下载` }, { status: 413 });
+  }
 
   const files: Array<{ name: string; data: Uint8Array }> = [];
   for (const ref of fileRefs) {

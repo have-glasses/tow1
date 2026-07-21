@@ -31,7 +31,7 @@ export async function GET(request: Request, context: { params: Promise<{ id: str
   if (!(await isOwnerAuthenticated())) return NextResponse.json({ error: "登录已失效" }, { status: 401 });
   const { id } = await context.params;
   const item = await getItem(id);
-  if (!item || item.kind !== "file" || item.status !== "active" || !item.storage_key) return NextResponse.json({ error: "文件不存在" }, { status: 404 });
+  if (!item || item.kind !== "file" || !["active", "trashed"].includes(item.status) || !item.storage_key) return NextResponse.json({ error: "文件不存在" }, { status: 404 });
   if (!isPreviewable(item.mime_type, item.name)) return NextResponse.json({ error: "此文件暂不支持预览" }, { status: 415 });
 
   const range = request.headers.get("range");

@@ -1,5 +1,6 @@
 import Link from "next/link";
-import { ChevronRight, Cloud, Download, File, FileImage, FileText, Folder, ShieldX } from "lucide-react";
+import { ChevronRight, Cloud, Download, Folder, ShieldX } from "lucide-react";
+import { FileTypeIcon } from "@/components/FileTypeIcon";
 import ShareUnlockForm from "@/components/ShareUnlockForm";
 import { isImagePublic, PublicPreviewButton } from "@/components/PublicSharePreview";
 import { getItem, getShareByToken, itemBelongsToShare, listItems, type DriveItem } from "@/lib/db";
@@ -12,13 +13,6 @@ function formatBytes(bytes: number) {
   let unit = units[0];
   for (let i = 1; i < units.length && value >= 1024; i += 1) { value /= 1024; unit = units[i]; }
   return `${value >= 10 ? value.toFixed(0) : value.toFixed(1)} ${unit}`;
-}
-
-function itemIcon(item: DriveItem) {
-  if (item.kind === "folder") return <Folder className="folder-icon" />;
-  if (isImagePublic(item)) return <FileImage className="image-icon" />;
-  if (item.mime_type?.includes("pdf") || item.mime_type?.startsWith("text/")) return <FileText className="document-icon" />;
-  return <File className="file-icon" />;
 }
 
 function InvalidShare() {
@@ -50,7 +44,7 @@ export default async function SharedPage({ params, searchParams }: { params: Pro
           {item.kind === "folder" ? <Link className="file-open" href={`/s/${token}?folder=${item.id}`} aria-label={`打开 ${item.name}`} /> : null}
           {item.kind === "file" ? <PublicPreviewButton item={item} token={token} /> : null}
           <div className={isImagePublic(item) ? "file-visual image-thumb" : "file-visual"}>
-            {isImagePublic(item) ? <img src={`/api/public/shares/${token}/files/${item.id}/preview`} alt="" loading="lazy" /> : itemIcon(item)}
+            {isImagePublic(item) ? <img src={`/api/public/shares/${token}/files/${item.id}/preview`} alt="" loading="lazy" /> : <FileTypeIcon item={item} />}
           </div>
           <div className="file-info"><strong title={item.name}>{item.name}</strong><span>{item.kind === "folder" ? "文件夹" : formatBytes(item.size_bytes)}</span></div>
           {item.kind === "file" ? <a className="public-download" href={`/api/public/shares/${token}/files/${item.id}`}><Download size={17} />下载</a> : null}
