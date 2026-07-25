@@ -1,8 +1,8 @@
 import Link from "next/link";
 import { ChevronRight, Cloud, Download, Folder, ShieldX } from "lucide-react";
-import { FileTypeIcon, isImageFile } from "@/components/FileTypeIcon";
+import { FileTypeIcon, isImageFile, isVideoFile } from "@/components/FileTypeIcon";
 import ShareUnlockForm from "@/components/ShareUnlockForm";
-import { PublicPreviewButton } from "@/components/PublicSharePreview";
+import { PublicPreviewButton, PublicVideoTile } from "@/components/PublicSharePreview";
 import { getItem, getShareByToken, itemBelongsToShare, listItems, type DriveItem } from "@/lib/db";
 import { hasShareAccess, isShareActive } from "@/lib/shares";
 
@@ -43,9 +43,9 @@ export default async function SharedPage({ params, searchParams }: { params: Pro
         {items.length ? <div className="file-grid public-file-grid">{items.map((item) => <article className="file-card" key={item.id}>
           {item.kind === "folder" ? <Link className="file-open" href={`/s/${token}?folder=${item.id}`} aria-label={`打开 ${item.name}`} /> : null}
           {item.kind === "file" ? <PublicPreviewButton item={{ id: item.id, name: item.name, mime_type: item.mime_type, size_bytes: item.size_bytes }} token={token} /> : null}
-          <div className={isImageFile(item) ? "file-visual image-thumb" : "file-visual"}>
+          {isVideoFile(item) ? <PublicVideoTile itemId={item.id} token={token} /> : <div className={isImageFile(item) ? "file-visual image-thumb" : "file-visual"}>
             {isImageFile(item) ? <img src={`/api/public/shares/${token}/files/${item.id}/preview`} alt="" loading="lazy" /> : <FileTypeIcon item={item} />}
-          </div>
+          </div>}
           <div className="file-info"><strong title={item.name}>{item.name}</strong><span>{item.kind === "folder" ? "文件夹" : formatBytes(item.size_bytes)}</span></div>
           {item.kind === "file" ? <a className="public-download" href={`/api/public/shares/${token}/files/${item.id}`}><Download size={17} />下载</a> : null}
         </article>)}</div> : <div className="empty-state"><div className="empty-icon"><Folder /></div><h2>文件夹是空的</h2></div>}

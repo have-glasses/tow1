@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import { Download, X } from "lucide-react";
+import { Download, FileVideo, Play, X } from "lucide-react";
 
 export type PublicPreviewItem = {
   id: string;
@@ -43,6 +43,29 @@ function formatBytes(bytes: number) {
   let unit = units[0];
   for (let i = 1; i < units.length && value >= 1024; i += 1) { value /= 1024; unit = units[i]; }
   return `${value >= 10 ? value.toFixed(0) : value.toFixed(1)} ${unit}`;
+}
+
+function videoThumbnailTime(video: HTMLVideoElement) {
+  return Number.isFinite(video.duration) ? Math.min(0.5, Math.max(0.05, video.duration * 0.05)) : 0.1;
+}
+
+export function PublicVideoTile({ itemId, token }: { itemId: string; token: string }) {
+  const [failed, setFailed] = useState(false);
+  const previewUrl = `/api/public/shares/${token}/files/${itemId}/preview`;
+
+  return (
+    <div className="file-visual video-thumb">
+      {failed ? <FileVideo className="video-icon" /> : <video
+        src={previewUrl}
+        preload="metadata"
+        muted
+        playsInline
+        onLoadedMetadata={(event) => { event.currentTarget.currentTime = videoThumbnailTime(event.currentTarget); }}
+        onError={() => setFailed(true)}
+      />}
+      <span className="play-badge" aria-hidden="true"><Play size={16} fill="currentColor" /></span>
+    </div>
+  );
 }
 
 export function PublicPreviewButton({ item, token }: { item: PublicPreviewItem; token: string }) {
