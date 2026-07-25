@@ -123,9 +123,19 @@ async function ensureSchema() {
 
 function rowToItem(row: Record<string, unknown>) {
   return {
-    ...row,
-    size_bytes: Number(row.size_bytes)
-  } as DriveItem;
+    id: String(row.id),
+    parent_id: row.parent_id == null ? null : String(row.parent_id),
+    kind: String(row.kind) as DriveItem["kind"],
+    name: String(row.name),
+    storage_key: row.storage_key == null ? null : String(row.storage_key),
+    cover_storage_key: row.cover_storage_key == null ? null : String(row.cover_storage_key),
+    mime_type: row.mime_type == null ? null : String(row.mime_type),
+    size_bytes: Number(row.size_bytes),
+    status: String(row.status) as DriveItem["status"],
+    created_at: String(row.created_at),
+    updated_at: String(row.updated_at),
+    trashed_at: row.trashed_at == null ? null : String(row.trashed_at)
+  };
 }
 
 export async function listItems(parentId: string | null, trash = false) {
