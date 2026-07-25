@@ -2,24 +2,30 @@
 
 import { useState } from "react";
 import { Download, X } from "lucide-react";
-import type { DriveItem } from "@/lib/db";
 
-function extension(item: DriveItem) {
+export type PublicPreviewItem = {
+  id: string;
+  name: string;
+  mime_type: string | null;
+  size_bytes: number;
+};
+
+function extension(item: Pick<PublicPreviewItem, "name">) {
   return item.name.split(".").pop()?.toLowerCase() || "";
 }
 
-export function isPreviewablePublic(item: DriveItem) {
+export function isPreviewablePublic(item: Pick<PublicPreviewItem, "name" | "mime_type">) {
   const type = item.mime_type || "";
   const ext = extension(item);
   return type.startsWith("image/") || type.startsWith("video/") || type.startsWith("audio/") || type.startsWith("text/") || type === "application/pdf" ||
     ["jpg", "jpeg", "png", "gif", "webp", "bmp", "svg", "avif", "mp4", "webm", "mov", "mp3", "wav", "ogg", "m4a", "txt", "md", "csv", "json", "log", "pdf"].includes(ext);
 }
 
-export function isImagePublic(item: DriveItem) {
+export function isImagePublic(item: Pick<PublicPreviewItem, "name" | "mime_type">) {
   return Boolean(item.mime_type?.startsWith("image/")) || ["jpg", "jpeg", "png", "gif", "webp", "bmp", "svg", "avif"].includes(extension(item));
 }
 
-function previewKind(item: DriveItem) {
+function previewKind(item: Pick<PublicPreviewItem, "name" | "mime_type">) {
   const type = item.mime_type || "";
   const ext = extension(item);
   if (isImagePublic(item)) return "image";
@@ -39,7 +45,7 @@ function formatBytes(bytes: number) {
   return `${value >= 10 ? value.toFixed(0) : value.toFixed(1)} ${unit}`;
 }
 
-export function PublicPreviewButton({ item, token }: { item: DriveItem; token: string }) {
+export function PublicPreviewButton({ item, token }: { item: PublicPreviewItem; token: string }) {
   const [open, setOpen] = useState(false);
   if (!isPreviewablePublic(item)) return null;
   const previewUrl = `/api/public/shares/${token}/files/${item.id}/preview`;
