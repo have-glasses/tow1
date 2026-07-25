@@ -1,8 +1,8 @@
 import Link from "next/link";
-import { ChevronRight, Cloud, Download, Folder, ShieldX } from "lucide-react";
+import { ChevronRight, Cloud, Folder, ShieldX } from "lucide-react";
 import { FileTypeIcon, isImageFile, isVideoFile } from "@/components/FileTypeIcon";
 import ShareUnlockForm from "@/components/ShareUnlockForm";
-import { PublicBatchDownloadButton, PublicPreviewButton, PublicVideoTile, type PublicDownloadItem } from "@/components/PublicSharePreview";
+import { PublicBatchDownloadButton, PublicDownloadLink, PublicPreviewButton, PublicVideoTile, type PublicDownloadItem } from "@/components/PublicSharePreview";
 import { getItem, getShareByToken, itemBelongsToShare, listItems, type DriveItem } from "@/lib/db";
 import { hasShareAccess, isShareActive } from "@/lib/shares";
 
@@ -58,7 +58,7 @@ export default async function SharedPage({ params, searchParams }: { params: Pro
             {isImageFile(item) ? <img src={`/api/public/shares/${token}/files/${item.id}/preview`} alt="" loading="lazy" /> : <FileTypeIcon item={item} />}
           </div>}
           <div className="file-info"><strong title={item.name}>{item.name}</strong><span>{item.kind === "folder" ? "文件夹" : formatBytes(item.size_bytes)}</span></div>
-          {item.kind === "file" ? <a className="public-download" href={`/api/public/shares/${token}/files/${item.id}`}><Download size={17} />下载</a> : null}
+          {item.kind === "file" ? <PublicDownloadLink href={`/api/public/shares/${token}/files/${item.id}`} name={item.name} /> : null}
         </article>)}</div> : <div className="empty-state"><div className="empty-icon"><Folder /></div><h2>文件夹是空的</h2></div>}
       </section>
     </main>

@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import { Download, FileVideo, Play, X } from "lucide-react";
+import { Download, ExternalLink, FileVideo, Play, X } from "lucide-react";
 
 export type PublicPreviewItem = {
   id: string;
@@ -14,6 +14,29 @@ export type PublicDownloadItem = {
   id: string;
   name: string;
 };
+
+function isRestrictedInAppBrowser() {
+  const userAgent = navigator.userAgent;
+  return /MicroMessenger|Weibo|QQ\/|AlipayClient|DingTalk|aweme|Toutiao|BytedanceWebview/i.test(userAgent);
+}
+
+function DownloadBrowserGuide({ onClose }: { onClose: () => void }) {
+  return (
+    <div className="modal-backdrop" onMouseDown={onClose}>
+      <section className="modal download-guide-modal" onMouseDown={(event) => event.stopPropagation()}>
+        <div className="download-guide-icon"><ExternalLink size={24} /></div>
+        <h2>请在浏览器中打开</h2>
+        <p>当前应用可能无法直接下载文件。</p>
+        <ol>
+          <li>点击右上角菜单</li>
+          <li>选择“在浏览器打开”</li>
+          <li>重新点击下载</li>
+        </ol>
+        <button className="primary-button" type="button" onClick={onClose}>知道了</button>
+      </section>
+    </div>
+  );
+}
 
 function extension(item: Pick<PublicPreviewItem, "name">) {
   return item.name.split(".").pop()?.toLowerCase() || "";
@@ -77,8 +100,13 @@ export function PublicBatchDownloadButton({ files, token, tooMany = false }: { f
   const [progress, setProgress] = useState(0);
   const [running, setRunning] = useState(false);
   const [message, setMessage] = useState("");
+  const [showBrowserGuide, setShowBrowserGuide] = useState(false);
 
   async function downloadAll() {
+    if (isRestrictedInAppBrowser()) {
+      setShowBrowserGuide(true);
+      return;
+    }
     if (tooMany) {
       setMessage("文件较多，请进入子文件夹分批下载");
       return;
@@ -111,7 +139,23 @@ export function PublicBatchDownloadButton({ files, token, tooMany = false }: { f
         <Download size={16} />{running ? `正在下载 ${progress}/${files.length}` : "下载全部"}
       </button>
       {message ? <span className="batch-download-message" role="status">{message}</span> : null}
+      {showBrowserGuide ? <DownloadBrowserGuide onClose={() => setShowBrowserGuide(false)} /> : null}
     </div>
+  );
+}
+
+export function PublicDownloadLink({ href, name, className = "public-download" }: { href: string; name: string; className?: string }) {
+  const [showBrowserGuide, setShowBrowserGuide] = useState(false);
+
+  return (
+    <>
+      <a className={className} href={href} download={name} onClick={(event) => {
+        if (!isRestrictedInAppBrowser()) return;
+        event.preventDefault();
+        setShowBrowserGuide(true);
+      }}><Download size={17} />下载</a>
+      {showBrowserGuide ? <DownloadBrowserGuide onClose={() => setShowBrowserGuide(false)} /> : null}
+    </>
   );
 }
 
@@ -139,7 +183,7 @@ export function PublicPreviewButton({ item, token }: { item: PublicPreviewItem; 
             {kind === "audio" ? <audio src={previewUrl} controls /> : null}
           </div>
           <div className="modal-actions">
-            <a className="secondary-button" href={downloadUrl}><Download size={16} />下载</a>
+            <PublicDownloadLink className="secondary-button" href={downloadUrl} name={item.name} />
             <button className="primary-button compact" onClick={() => setOpen(false)}>完成</button>
           </div>
         </section>
