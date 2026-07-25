@@ -2,7 +2,7 @@ import Link from "next/link";
 import { ChevronRight, Cloud, Download, Folder, ShieldX } from "lucide-react";
 import { FileTypeIcon, isImageFile, isVideoFile } from "@/components/FileTypeIcon";
 import ShareUnlockForm from "@/components/ShareUnlockForm";
-import { PublicPreviewButton, PublicVideoTile } from "@/components/PublicSharePreview";
+import { PublicBatchDownloadButton, PublicPreviewButton, PublicVideoTile, type PublicDownloadItem } from "@/components/PublicSharePreview";
 import { getItem, getShareByToken, itemBelongsToShare, listItems, type DriveItem } from "@/lib/db";
 import { hasShareAccess, isShareActive } from "@/lib/shares";
 
@@ -19,6 +19,15 @@ function InvalidShare() {
   return <main className="share-shell"><section className="share-unlock-card invalid-share"><div className="empty-icon"><ShieldX /></div><h1>分享已失效</h1><p className="muted">链接可能已过期或被分享者撤销。</p></section></main>;
 }
 
+async function collectDownloadItems(folder: DriveItem, limit = 200, files: PublicDownloadItem[] = []) {
+  for (const child of await listItems(folder.id)) {
+    if (files.length > limit) break;
+    if (child.kind === "folder") await collectDownloadItems(child, limit, files);
+    else files.push({ id: child.id, name: child.name });
+  }
+  return files;
+}
+
 export default async function SharedPage({ params, searchParams }: { params: Promise<{ token: string }>; searchParams: Promise<{ folder?: string }> }) {
   const { token } = await params;
   const query = await searchParams;
@@ -33,13 +42,15 @@ export default async function SharedPage({ params, searchParams }: { params: Pro
     if (requested?.kind === "folder" && requested.status === "active" && await itemBelongsToShare(requested.id, root.id)) current = requested;
   }
   const items = root.kind === "folder" ? await listItems(current.id) : [root];
+  const downloadItems = root.kind === "file" ? [{ id: root.id, name: root.name }] : await collectDownloadItems(current, 200);
+  const tooManyDownloads = downloadItems.length > 200;
 
   return (
     <main className="public-share-page">
       <header className="public-share-header"><div className="brand"><span className="brand-mark small"><Cloud size={20} /></span><span>Tow1</span></div><span>安全分享</span></header>
       <section className="public-share-content">
         <div className="breadcrumb"><Link href={`/s/${token}`}>{root.name}</Link>{current.id !== root.id ? <><ChevronRight size={15} /><span>{current.name}</span></> : null}</div>
-        <div className="share-title"><div><h1>{current.name}</h1><p>{root.kind === "file" ? "共享文件" : `${items.length} 个项目`}</p></div><div className="share-title-actions"><span>有效期至 {new Date(share.expires_at).toLocaleString("zh-CN", { hour12: false })}</span><a className="secondary-button compact-link" href={`/api/public/shares/${token}/download${current.id !== root.id ? `?folder=${current.id}` : ""}`}><Download size={16} />下载全部</a></div></div>
+        <div className="share-title"><div><h1>{current.name}</h1><p>{root.kind === "file" ? "共享文件" : `${items.length} 个项目`}</p></div><div className="share-title-actions"><span>有效期至 {new Date(share.expires_at).toLocaleString("zh-CN", { hour12: false })}</span><PublicBatchDownloadButton files={downloadItems.slice(0, 200)} token={token} tooMany={tooManyDownloads} /></div></div>
         {items.length ? <div className="file-grid public-file-grid">{items.map((item) => <article className="file-card" key={item.id}>
           {item.kind === "folder" ? <Link className="file-open" href={`/s/${token}?folder=${item.id}`} aria-label={`打开 ${item.name}`} /> : null}
           {item.kind === "file" ? <PublicPreviewButton item={{ id: item.id, name: item.name, mime_type: item.mime_type, size_bytes: item.size_bytes }} token={token} /> : null}

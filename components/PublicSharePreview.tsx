@@ -10,6 +10,11 @@ export type PublicPreviewItem = {
   size_bytes: number;
 };
 
+export type PublicDownloadItem = {
+  id: string;
+  name: string;
+};
+
 function extension(item: Pick<PublicPreviewItem, "name">) {
   return item.name.split(".").pop()?.toLowerCase() || "";
 }
@@ -64,6 +69,48 @@ export function PublicVideoTile({ itemId, token }: { itemId: string; token: stri
         onError={() => setFailed(true)}
       />}
       <span className="play-badge" aria-hidden="true"><Play size={16} fill="currentColor" /></span>
+    </div>
+  );
+}
+
+export function PublicBatchDownloadButton({ files, token, tooMany = false }: { files: PublicDownloadItem[]; token: string; tooMany?: boolean }) {
+  const [progress, setProgress] = useState(0);
+  const [running, setRunning] = useState(false);
+  const [message, setMessage] = useState("");
+
+  async function downloadAll() {
+    if (tooMany) {
+      setMessage("文件较多，请进入子文件夹分批下载");
+      return;
+    }
+    if (!files.length || running) return;
+    setRunning(true);
+    setProgress(0);
+    setMessage("");
+
+    for (let index = 0; index < files.length; index += 1) {
+      const file = files[index];
+      const link = document.createElement("a");
+      link.href = `/api/public/shares/${token}/files/${file.id}`;
+      link.download = file.name;
+      link.style.display = "none";
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      setProgress(index + 1);
+      if (index < files.length - 1) await new Promise((resolve) => window.setTimeout(resolve, 600));
+    }
+
+    setRunning(false);
+    setMessage(`已发起 ${files.length} 个下载；若被拦截，请允许此网站下载多个文件`);
+  }
+
+  return (
+    <div className="batch-download">
+      <button className="secondary-button compact-link" type="button" onClick={downloadAll} disabled={running || !files.length}>
+        <Download size={16} />{running ? `正在下载 ${progress}/${files.length}` : "下载全部"}
+      </button>
+      {message ? <span className="batch-download-message" role="status">{message}</span> : null}
     </div>
   );
 }
