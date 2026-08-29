@@ -6,10 +6,10 @@ import { useRouter } from "next/navigation";
 import {
   ArchiveRestore, ChevronRight, Cloud, Download, ImagePlus,
   Folder, FolderPlus, HardDrive, Home, LogOut,
-  MoreHorizontal, Play, Search, Share2, Trash2, Upload, X
+  MoreHorizontal, Play, Search, Share2, Trash2, Upload, X, List, LayoutGrid, Menu, Clock3, History, ArrowDownAZ
 } from "lucide-react";
-import type { DriveItem } from "@/lib/db";
-import { createFolderAction, logoutAction, permanentlyDeleteItemAction, renameItemAction, restoreItemAction, trashItemAction } from "@/app/actions";
+import type { DriveCategory, DriveItem } from "@/lib/db";
+import { addCategoryItemAction, createCategoryAction, createFolderAction, logoutAction, permanentlyDeleteItemAction, removeCategoryItemAction, renameItemAction, restoreItemAction, trashItemAction } from "@/app/actions";
 import ShareDialog from "./ShareDialog";
 import { FileTypeIcon, isAudioFile, isImageFile, isVideoFile } from "./FileTypeIcon";
 import ThemeSwitcher from "./ThemeSwitcher";
@@ -19,6 +19,10 @@ type Props = {
   parent: DriveItem | null;
   trash: boolean;
   stats: { used: number; count: number; quotaBytes: number | null };
+  categories: DriveCategory[];
+  category: DriveCategory | null;
+  availableItems: DriveItem[];
+  categoryMemberships: Record<string, string[]>;
 };
 
 type UploadState = { name: string; progress: number; error?: string; note?: string };
@@ -154,12 +158,16 @@ function VideoTilePreview({ item }: { item: DriveItem }) {
   );
 }
 
-export default function DriveWorkspace({ items, parent, trash, stats }: Props) {
+export default function DriveWorkspace({ items, parent, trash, stats, categories, category, availableItems, categoryMemberships }: Props) {
   const router = useRouter();
   const picker = useRef<HTMLInputElement>(null);
+  const allowUploadNavigation = useRef(false);
   const coverPicker = useRef<HTMLInputElement>(null);
+  const createCoverPicker = useRef<HTMLInputElement>(null);
   const [query, setQuery] = useState("");
   const [showFolder, setShowFolder] = useState(false);
+  const [createCoverFile, setCreateCoverFile] = useState<File | null>(null);
+  const [createCoverPreview, setCreateCoverPreview] = useState<string | null>(null);
   const [renaming, setRenaming] = useState<DriveItem | null>(null);
   const [sharing, setSharing] = useState<DriveItem | null>(null);
   const [previewing, setPreviewing] = useState<DriveItem | null>(null);
@@ -167,7 +175,23 @@ export default function DriveWorkspace({ items, parent, trash, stats }: Props) {
   const [uploading, setUploading] = useState(false);
   const [coverBusy, setCoverBusy] = useState(false);
   const [coverError, setCoverError] = useState("");
-  const visibleItems = useMemo(() => items.filter((item) => item.name.toLowerCase().includes(query.toLowerCase())), [items, query]);
+  const [viewMode, setViewMode] = useState<"list" | "grid">("list");
+  const [sortMode, setSortMode] = useState<"created" | "updated" | "name">("created");
+  const [sortOpen, setSortOpen] = useState(false);
+  const [showCategory, setShowCategory] = useState(false);
+  const [sidebarOpen, setSidebarOpen] = useState(false);
+  const [showAddItem, setShowAddItem] = useState(false);
+  useEffect(() => {
+    try {
+      const savedView = localStorage.getItem("tow1:view") as "list" | "grid" | null;
+      const savedSort = localStorage.getItem("tow1:sort") as "created" | "updated" | "name" | null;
+      if (savedView === "list" || savedView === "grid") setViewMode(savedView);
+      if (savedSort === "created" || savedSort === "updated" || savedSort === "name") setSortMode(savedSort);
+    } catch { /* local preferences are optional */ }
+  }, []);
+  const visibleItems = useMemo(() => items
+    .filter((item) => item.name.toLowerCase().includes(query.toLowerCase()))
+    .sort((a, b) => sortMode === "name" ? a.name.localeCompare(b.name, "zh-CN") : sortMode === "updated" ? Date.parse(b.updated_at) - Date.parse(a.updated_at) : Date.parse(a.created_at) - Date.parse(b.created_at)), [items, query, sortMode]);
   const remainingBytes = stats.quotaBytes === null ? null : Math.max(0, stats.quotaBytes - stats.used);
   const usedPercent = stats.quotaBytes ? Math.min(100, Math.round(stats.used / stats.quotaBytes * 100)) : null;
 
@@ -200,6 +224,7 @@ export default function DriveWorkspace({ items, parent, trash, stats }: Props) {
     if (!uploading) return;
 
     function warnBeforeUnload(event: BeforeUnloadEvent) {
+      if (allowUploadNavigation.current) return;
       event.preventDefault();
       event.returnValue = "";
     }
@@ -215,6 +240,8 @@ export default function DriveWorkspace({ items, parent, trash, stats }: Props) {
       if (!window.confirm("文件正在上传，离开当前页面会中断上传。确定要离开吗？")) {
         event.preventDefault();
         event.stopPropagation();
+      } else {
+        allowUploadNavigation.current = true;
       }
     }
 
@@ -227,8 +254,17 @@ export default function DriveWorkspace({ items, parent, trash, stats }: Props) {
   }, [uploading]);
 
   async function saveFolder(formData: FormData) {
-    await createFolderAction(formData);
+    const folderId = await createFolderAction(formData);
+    if (createCoverFile) {
+      const prepared = await fetch(`/api/folders/${folderId}/cover`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ stage: "prepare", type: createCoverFile.type, size: createCoverFile.size }) });
+      const payload = await prepared.json() as { uploadUrl?: string; error?: string };
+      if (!prepared.ok || !payload.uploadUrl) throw new Error(payload.error || "无法准备封面上传");
+      await uploadBlob(payload.uploadUrl, createCoverFile, () => undefined, createCoverFile.type);
+      const completed = await fetch(`/api/folders/${folderId}/cover`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ stage: "complete" }) });
+      if (!completed.ok) throw new Error("封面保存失败");
+    }
     setShowFolder(false);
+    setCreateCoverFile(null); setCreateCoverPreview(null); router.refresh();
   }
 
   async function saveRename(formData: FormData) {
@@ -307,7 +343,7 @@ export default function DriveWorkspace({ items, parent, trash, stats }: Props) {
     const prepared = await fetch("/api/uploads/prepare", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ name: file.name, type: file.type, size: file.size, lastModified: file.lastModified, parentId })
+      body: JSON.stringify({ name: file.name, type: file.type, size: file.size, lastModified: file.lastModified, parentId, categoryId: category?.id || null })
     });
     const payload = await prepared.json() as PreparePayload;
     if (!prepared.ok) throw new Error(payload.error || "无法开始上传");
@@ -380,17 +416,22 @@ export default function DriveWorkspace({ items, parent, trash, stats }: Props) {
 
   return (
     <div className="app-shell">
-      <aside className="sidebar">
-        <div className="brand"><span className="brand-mark small"><Cloud size={20} /></span><span>Tow1</span></div>
+      {sidebarOpen ? <button className="sidebar-scrim" aria-label="关闭侧栏" onClick={() => setSidebarOpen(false)} /> : null}
+      <aside className={sidebarOpen ? "sidebar sidebar-open" : "sidebar"}>
+        <Link className="brand" href="/" aria-label="返回首页"><span className="brand-mark small"><Cloud size={20} /></span><span>Tow1</span></Link>
         <nav>
           <Link className={!trash ? "nav-item active" : "nav-item"} href="/"><Home size={18} />我的文件</Link>
-          <Link className={trash ? "nav-item active" : "nav-item"} href="/?view=trash"><Trash2 size={18} />回收站</Link>
+          <div className="category-heading"><span>分类</span><button className="text-button" onClick={() => setShowCategory(true)}>添加</button></div>
+          {categories.map((category) => <Link className="nav-item category-item" href={`/?category=${category.id}`} key={category.id}><i style={{ background: category.color }} />{category.name}</Link>)}
         </nav>
+        <div className="sidebar-bottom">
+        <Link className={trash ? "nav-item active" : "nav-item"} href="/?view=trash"><Trash2 size={18} />回收站</Link>
         <div className="storage-card">
           <div className="storage-heading"><HardDrive size={17} /><span>存储空间</span></div>
           <strong>{formatBytes(stats.used)}</strong>
           <span>{stats.count} 个文件</span>
           {stats.quotaBytes ? <><div className="storage-meter"><i style={{ width: `${usedPercent}%` }} /></div><span>剩余 {formatBytes(remainingBytes || 0)} / 共 {formatBytes(stats.quotaBytes)}</span></> : <span>未设置容量上限</span>}
+        </div>
         </div>
         <form action={logoutAction}><button className="nav-item logout"><LogOut size={18} />退出登录</button></form>
       </aside>
@@ -399,8 +440,11 @@ export default function DriveWorkspace({ items, parent, trash, stats }: Props) {
         <header className="topbar">
           <div className="search"><Search size={18} /><input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="搜索当前文件夹" /></div>
           <div className="top-actions">
+            {!sidebarOpen ? <button className="sidebar-toggle icon-button" title="打开导航" aria-label="打开导航" onClick={() => setSidebarOpen(true)}><Menu size={18} /></button> : null}
             <ThemeSwitcher />
-            {!trash ? <><button className="secondary-button" onClick={() => setShowFolder(true)}><FolderPlus size={17} />新建文件夹</button>
+            <div className="sort-control"><button className="sort-trigger" aria-label="排序方式" aria-expanded={sortOpen} onClick={() => setSortOpen((v) => !v)}>{sortMode === "created" ? <Clock3 size={18} /> : sortMode === "updated" ? <History size={18} /> : <ArrowDownAZ size={18} />}</button>{sortOpen ? <div className="sort-menu"><button className={sortMode === "created" ? "selected" : ""} onClick={() => { setSortMode("created"); localStorage.setItem("tow1:sort", "created"); setSortOpen(false); }}>创建时间<Clock3 size={15} /></button><button className={sortMode === "updated" ? "selected" : ""} onClick={() => { setSortMode("updated"); localStorage.setItem("tow1:sort", "updated"); setSortOpen(false); }}>最近修改<History size={15} /></button><button className={sortMode === "name" ? "selected" : ""} onClick={() => { setSortMode("name"); localStorage.setItem("tow1:sort", "name"); setSortOpen(false); }}>字母顺序<ArrowDownAZ size={15} /></button></div> : null}</div>
+            <button className="icon-button" title={viewMode === "list" ? "切换为网格视图" : "切换为列表视图"} aria-label={viewMode === "list" ? "切换为网格视图" : "切换为列表视图"} onClick={() => { const next = viewMode === "list" ? "grid" : "list"; setViewMode(next); localStorage.setItem("tow1:view", next); }}>{viewMode === "list" ? <LayoutGrid size={18} /> : <List size={18} />}</button>
+              {!trash ? <><button className="secondary-button" onClick={() => setShowFolder(true)}><FolderPlus size={17} />新建文件夹</button>
               <button className="primary-button compact" onClick={() => picker.current?.click()}><Upload size={17} />上传文件</button>
               <input ref={picker} hidden type="file" multiple onChange={(e) => uploadFiles(e.target.files)} /></> : null}
           </div>
@@ -409,13 +453,14 @@ export default function DriveWorkspace({ items, parent, trash, stats }: Props) {
         <section className="content">
           <div className="breadcrumb">
             <Link href="/">我的文件</Link>
+            {category ? <><ChevronRight size={15} /><span>{category.name}</span></> : null}
             {parent ? <><ChevronRight size={15} /><span>{parent.name}</span></> : null}
             {trash ? <><ChevronRight size={15} /><span>回收站</span></> : null}
           </div>
-          <div className="title-row"><div><h1>{trash ? "回收站" : parent?.name || "我的文件"}</h1><p>{visibleItems.length} 个项目</p></div></div>
+          <div className="title-row"><div><h1>{trash ? "回收站" : category?.name || parent?.name || "我的文件"}</h1><p>{visibleItems.length} 个项目</p></div>{category ? <button className="secondary-button" onClick={() => setShowAddItem(true)}>添加项目</button> : null}</div>
 
           {visibleItems.length ? (
-            <div className="file-grid">
+            <div className={viewMode === "list" ? "file-list" : "file-grid"}>
               {visibleItems.map((item) => (
                 <article
                   className="file-card"
@@ -440,7 +485,7 @@ export default function DriveWorkspace({ items, parent, trash, stats }: Props) {
                         : isImage(item) ? <img src={`/api/files/${item.id}/preview`} alt="" loading="lazy" /> : <FileTypeIcon item={item} />}
                     </div>
                   )}
-                  <div className="file-info"><strong title={item.name}>{item.name}</strong><span>{item.kind === "folder" ? "文件夹" : formatBytes(item.size_bytes)}</span></div>
+                  <div className="file-info"><strong title={item.name}>{item.name}</strong><span>{item.kind === "folder" ? "文件夹" : formatBytes(item.size_bytes)}</span><small>创建于 {new Date(item.created_at).toLocaleString("zh-CN")} · 修改于 {new Date(item.updated_at).toLocaleString("zh-CN")}</small></div>
                   <div className="item-actions">
                     {trash ? (
                       <>
@@ -449,7 +494,7 @@ export default function DriveWorkspace({ items, parent, trash, stats }: Props) {
                       </>
                     ) : <>
                       {item.kind === "file" ? <a href={`/api/files/${item.id}/download`} title="下载"><Download size={17} /></a> : null}
-                      <button title="更多" onClick={() => { setCoverError(""); setRenaming(item); }}><MoreHorizontal size={18} /></button>
+                      {category ? <form action={removeCategoryItemAction}><input type="hidden" name="categoryId" value={category.id} /><input type="hidden" name="itemId" value={item.id} /><button title="从分类移除"><X size={17} /></button></form> : null}<button title="更多" onClick={() => { setCoverError(""); setRenaming(item); }}><MoreHorizontal size={18} /></button>
                     </>}
                   </div>
                 </article>
@@ -467,11 +512,20 @@ export default function DriveWorkspace({ items, parent, trash, stats }: Props) {
 
       {uploads.length ? <div className="upload-panel"><div className="panel-title">上传任务<button onClick={() => setUploads([])}><X size={16} /></button></div>{uploads.map((item, index) => <div className="upload-row" key={`${item.name}-${index}`}><div><span>{item.name}</span><small>{item.error || item.note || `${item.progress}%`}</small></div><div className={item.error ? "progress error" : "progress"}><i style={{ width: `${item.progress}%` }} /></div></div>)}</div> : null}
 
-      {showFolder ? <div className="modal-backdrop" onMouseDown={() => setShowFolder(false)}><form action={saveFolder} className="modal" onMouseDown={(e) => e.stopPropagation()}><h2>新建文件夹</h2><input type="hidden" name="parentId" value={parent?.id || ""} /><label>文件夹名称<input name="name" autoFocus maxLength={180} required /></label><div className="modal-actions"><button type="button" className="text-button" onClick={() => setShowFolder(false)}>取消</button><button className="primary-button compact">创建</button></div></form></div> : null}
+      {showFolder ? <div className="modal-backdrop" onMouseDown={() => setShowFolder(false)}><form action={saveFolder} className="modal" onMouseDown={(e) => e.stopPropagation()}><h2>新建文件夹</h2><label className="name-cover-field"><button type="button" className="cover-picker-button" onClick={() => createCoverPicker.current?.click()}>{createCoverPreview ? <img src={createCoverPreview} alt="" /> : <ImagePlus size={20} />}</button><span>文件夹名称<input name="name" autoFocus maxLength={180} required /></span></label><input ref={createCoverPicker} hidden type="file" accept="image/jpeg,image/png,image/webp,image/avif" onChange={(e) => { const file=e.target.files?.[0]||null; setCreateCoverFile(file); setCreateCoverPreview(file ? URL.createObjectURL(file) : null); }} />{categories.length ? <label>添加到分类<select name="categoryId" defaultValue={[]} multiple>{categories.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}</select></label> : null}<div className="modal-actions"><button type="button" className="text-button" onClick={() => setShowFolder(false)}>取消</button><button className="primary-button compact">创建</button></div></form></div> : null}
+      {showAddItem && category ? <div className="modal-backdrop" onMouseDown={() => setShowAddItem(false)}><section className="modal" onMouseDown={(e) => e.stopPropagation()}><h2>添加到“{category.name}”</h2><div className="category-picker">{availableItems.filter((item) => !items.some((current) => current.id === item.id)).map((item) => <form action={async (fd) => { await addCategoryItemAction(fd); }} key={item.id}><input type="hidden" name="categoryId" value={category.id} /><input type="hidden" name="itemId" value={item.id} /><button className="secondary-button" onClick={() => setShowAddItem(false)}>{item.name}</button></form>)}</div><div className="modal-actions"><button className="text-button" onClick={() => setShowAddItem(false)}>关闭</button></div></section></div> : null}
+      {showCategory ? <div className="modal-backdrop" onMouseDown={() => setShowCategory(false)}><form action={async (formData) => { await createCategoryAction(formData); setShowCategory(false); }} className="modal" onMouseDown={(e) => e.stopPropagation()}><h2>新建分类</h2><label>分类名称<input name="name" autoFocus maxLength={80} required /></label><label>分类颜色<input name="color" type="color" defaultValue="#4b85a7" /></label><div className="modal-actions"><button type="button" className="text-button" onClick={() => setShowCategory(false)}>取消</button><button className="primary-button compact">创建</button></div></form></div> : null}
 
-      {renaming ? <div className="modal-backdrop" onMouseDown={() => setRenaming(null)}><form action={saveRename} className="modal" onMouseDown={(e) => e.stopPropagation()}><h2>管理项目</h2><input type="hidden" name="id" value={renaming.id} /><label>名称<input name="name" defaultValue={renaming.name} autoFocus maxLength={180} required /></label>{renaming.kind === "folder" ? <div className="folder-cover-actions"><span>文件夹封面</span><div><button type="button" className="secondary-button" disabled={coverBusy} onClick={() => coverPicker.current?.click()}><ImagePlus size={16} />{renaming.cover_storage_key ? "更换图片" : "选择图片"}</button>{renaming.cover_storage_key ? <button type="button" className="text-button" disabled={coverBusy} onClick={removeFolderCover}>恢复默认</button> : null}</div><input ref={coverPicker} hidden type="file" accept="image/jpeg,image/png,image/webp,image/avif" onChange={(event) => uploadFolderCover(event.target.files)} />{coverError ? <p className="form-error">{coverError}</p> : null}</div> : null}<div className="item-management-actions"><button type="button" className="secondary-button" onClick={() => { setSharing(renaming); setRenaming(null); }}><Share2 size={16} />分享</button><button formAction={moveToTrash} className="danger-button"><Trash2 size={16} />移入回收站</button></div><div className="modal-actions"><button type="button" className="text-button" onClick={() => setRenaming(null)}>取消</button><button className="primary-button compact">保存</button></div></form></div> : null}
+      {renaming ? <div className="modal-backdrop" onMouseDown={() => setRenaming(null)}><form action={saveRename} className="modal" onMouseDown={(e) => e.stopPropagation()}><h2>管理项目</h2><input type="hidden" name="id" value={renaming.id} /><label>名称<input name="name" defaultValue={renaming.name} autoFocus maxLength={180} required /></label>{categories.length ? <label>添加到分类<select name="categoryId" defaultValue={categoryMemberships[renaming.id] || []} multiple>{categories.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}</select></label> : null}{renaming.kind === "folder" ? <div className="name-cover-field"><button type="button" className="cover-picker-button" disabled={coverBusy} onClick={() => coverPicker.current?.click()}>{renaming.cover_storage_key ? <img src={`/api/folders/${renaming.id}/cover?v=${encodeURIComponent(renaming.updated_at)}`} alt="" /> : <ImagePlus size={20} />}</button><input ref={coverPicker} hidden type="file" accept="image/jpeg,image/png,image/webp,image/avif" onChange={(event) => uploadFolderCover(event.target.files)} />{coverError ? <p className="form-error">{coverError}</p> : null}</div> : null}<div className="item-management-actions"><button type="button" className="secondary-button" onClick={() => { setSharing(renaming); setRenaming(null); }}><Share2 size={16} />分享</button><button formAction={moveToTrash} className="danger-button"><Trash2 size={16} />移入回收站</button></div><div className="modal-actions"><button type="button" className="text-button" onClick={() => setRenaming(null)}>取消</button><button className="primary-button compact">保存</button></div></form></div> : null}
       {previewing ? <PreviewDialog item={previewing} onClose={() => setPreviewing(null)} /> : null}
       {sharing ? <ShareDialog item={sharing} onClose={() => setSharing(null)} /> : null}
     </div>
   );
 }
+
+
+
+
+
+
+

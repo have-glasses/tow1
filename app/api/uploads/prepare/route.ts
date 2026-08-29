@@ -2,14 +2,14 @@ import crypto from "node:crypto";
 import { NextResponse } from "next/server";
 import { isOwnerAuthenticated } from "@/lib/auth";
 import { createMultipartUpload, createStorageKey, listMultipartParts } from "@/lib/cos";
-import { createUploadSession, findUploadSession, getItem, getUploadSession, reserveFile } from "@/lib/db";
+import { addCategoryItem, createUploadSession, findUploadSession, getItem, getUploadSession, reserveFile } from "@/lib/db";
 
 const PART_SIZE = 8 * 1024 * 1024;
 
 export async function POST(request: Request) {
   if (!(await isOwnerAuthenticated())) return NextResponse.json({ error: "登录已失效" }, { status: 401 });
   try {
-    const input = await request.json() as { name?: string; type?: string; size?: number; parentId?: string | null; lastModified?: number | null };
+    const input = await request.json() as { name?: string; type?: string; size?: number; parentId?: string | null; lastModified?: number | null; categoryId?: string | null };
     const name = String(input.name || "").trim();
     const size = Number(input.size || 0);
     const fileLastModified = Number.isFinite(Number(input.lastModified)) ? Number(input.lastModified) : null;
@@ -34,6 +34,7 @@ export async function POST(request: Request) {
     const id = crypto.randomUUID();
     const storageKey = createStorageKey(id);
     await reserveFile({ id, parentId, name, storageKey, mimeType: String(input.type || "application/octet-stream"), sizeBytes: size });
+    if (input.categoryId) await addCategoryItem(String(input.categoryId), id);
     const uploadId = await createMultipartUpload(storageKey, String(input.type || "application/octet-stream"));
     await createUploadSession({ itemId: id, uploadId, partSize: PART_SIZE, fileLastModified });
     const session = await getUploadSession(id);

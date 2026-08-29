@@ -53,7 +53,7 @@ export default function ThemeSwitcher() {
   return (
     <div className="theme-switcher" ref={root}>
       <button className="theme-trigger" type="button" onClick={() => setOpen((value) => !value)} aria-expanded={open} aria-label="切换外观">
-        <Palette size={17} /><span>外观</span>
+        <Palette size={18} />
       </button>
       {open ? <div className="theme-menu" role="menu" aria-label="选择配色">
         {themes.map((option) => <button type="button" role="menuitemradio" aria-checked={theme === option.id} key={option.id} onClick={() => choose(option.id)}>

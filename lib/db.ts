@@ -28,6 +28,7 @@ export type DriveShare = {
   last_accessed_at: string | null;
   created_at: string;
 };
+export type DriveCategory = { id: string; name: string; color: string; created_at: string };
 
 export type DriveUploadSession = {
   item_id: string;
@@ -103,6 +104,8 @@ async function ensureSchema() {
         updated_at TEXT NOT NULL
       )`);
       await db.execute("CREATE INDEX IF NOT EXISTS idx_drive_upload_sessions_updated ON drive_upload_sessions(updated_at)");
+      await db.execute(`CREATE TABLE IF NOT EXISTS drive_categories (id TEXT PRIMARY KEY, name TEXT NOT NULL, color TEXT NOT NULL, created_at TEXT NOT NULL)`);
+      await db.execute(`CREATE TABLE IF NOT EXISTS drive_category_items (category_id TEXT NOT NULL, item_id TEXT NOT NULL, created_at TEXT NOT NULL, PRIMARY KEY (category_id,item_id))`);
       await db.execute(`WITH RECURSIVE trashed_descendants(id, trashed_at) AS (
         SELECT id, trashed_at FROM drive_items WHERE status = 'trashed'
         UNION ALL
@@ -120,6 +123,15 @@ async function ensureSchema() {
   await initialized;
   return getClient();
 }
+
+export async function listCategories() { const db = await ensureSchema(); const result = await db.execute("SELECT * FROM drive_categories ORDER BY created_at ASC"); return result.rows.map((row) => ({ id: String(row.id), name: String(row.name), color: String(row.color), created_at: String(row.created_at) })); }
+export async function getCategory(id: string) { const db = await ensureSchema(); const result = await db.execute({ sql: "SELECT * FROM drive_categories WHERE id = ? LIMIT 1", args: [id] }); const row = result.rows[0]; return row ? { id: String(row.id), name: String(row.name), color: String(row.color), created_at: String(row.created_at) } : null; }
+export async function listCategoryItems(categoryId: string) { const db = await ensureSchema(); const result = await db.execute({ sql: "SELECT i.* FROM drive_category_items c JOIN drive_items i ON i.id=c.item_id WHERE c.category_id=? AND i.status='active' ORDER BY i.created_at ASC", args: [categoryId] }); return result.rows.map((row) => rowToItem(row as unknown as Record<string, unknown>)); }
+export async function addCategoryItem(categoryId: string, itemId: string) { const db = await ensureSchema(); await db.execute({ sql: "INSERT OR IGNORE INTO drive_category_items (category_id,item_id,created_at) VALUES (?,?,?)", args: [categoryId,itemId,new Date().toISOString()] }); }
+export async function removeCategoryItem(categoryId: string, itemId: string) { const db = await ensureSchema(); await db.execute({ sql: "DELETE FROM drive_category_items WHERE category_id=? AND item_id=?", args: [categoryId,itemId] }); }
+export async function listItemCategoryIds(itemId: string) { const db = await ensureSchema(); const result = await db.execute({ sql: "SELECT category_id FROM drive_category_items WHERE item_id=?", args: [itemId] }); return result.rows.map((row) => String(row.category_id)); }
+export async function setItemCategories(itemId: string, categoryIds: string[]) { const db = await ensureSchema(); await db.execute({ sql: "DELETE FROM drive_category_items WHERE item_id=?", args: [itemId] }); for (const categoryId of categoryIds.filter(Boolean)) await db.execute({ sql: "INSERT OR IGNORE INTO drive_category_items (category_id,item_id,created_at) VALUES (?,?,?)", args: [categoryId,itemId,new Date().toISOString()] }); }
+export async function createCategory(id: string, name: string, color: string) { const db = await ensureSchema(); await db.execute({ sql: "INSERT INTO drive_categories (id,name,color,created_at) VALUES (?,?,?,?)", args: [id,name,color,new Date().toISOString()] }); }
 
 function rowToItem(row: Record<string, unknown>) {
   return {
@@ -319,6 +331,7 @@ export async function permanentlyDeleteItems(ids: string[]) {
     await db.execute({ sql: `DELETE FROM drive_share_attempts WHERE share_id IN (${sharePlaceholders})`, args: shareIds });
   }
   await db.execute({ sql: `DELETE FROM drive_shares WHERE item_id IN (${placeholders})`, args: ids });
+  await db.execute({ sql: `DELETE FROM drive_category_items WHERE item_id IN (${placeholders})`, args: ids });
   await db.execute({ sql: `DELETE FROM drive_items WHERE id IN (${placeholders})`, args: ids });
 }
 
