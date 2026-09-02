@@ -6,10 +6,10 @@ import { useRouter } from "next/navigation";
 import {
   ArchiveRestore, ChevronRight, Cloud, Download, ImagePlus,
   Folder, FolderPlus, HardDrive, Home, LogOut,
-  MoreHorizontal, Play, Search, Share2, Trash2, Upload, X, List, LayoutGrid, Menu, Clock3, History, ArrowDownAZ
+  MoreHorizontal, Play, Search, Share2, Trash2, Upload, X, List, LayoutGrid, Menu, Clock3, History, ArrowDownAZ, Pin, Pin as PinOff, Plus, SlidersHorizontal, Check, GripVertical
 } from "lucide-react";
 import type { DriveCategory, DriveItem } from "@/lib/db";
-import { addCategoryItemAction, createCategoryAction, createFolderAction, logoutAction, permanentlyDeleteItemAction, removeCategoryItemAction, renameItemAction, restoreItemAction, trashItemAction } from "@/app/actions";
+import { addCategoryItemAction, batchDeleteCategoriesAction, createCategoryAction, createFolderAction, deleteCategoryAction, logoutAction, permanentlyDeleteItemAction, removeCategoryItemAction, renameItemAction, reorderCategoriesAction, restoreItemAction, toggleCategoryPinnedAction, toggleItemPinnedAction, trashItemAction } from "@/app/actions";
 import ShareDialog from "./ShareDialog";
 import { FileTypeIcon, isAudioFile, isImageFile, isVideoFile } from "./FileTypeIcon";
 import ThemeSwitcher from "./ThemeSwitcher";
@@ -180,7 +180,19 @@ export default function DriveWorkspace({ items, parent, trash, stats, categories
   const [sortOpen, setSortOpen] = useState(false);
   const [showCategory, setShowCategory] = useState(false);
   const [sidebarOpen, setSidebarOpen] = useState(false);
+  const [swipedItemId, setSwipedItemId] = useState<string | null>(null);
+  const swipeStart = useRef<{ id: string; x: number; y: number; pointerId?: number } | null>(null);
+  const swipeMoved = useRef(false);
+  const [swipedCategoryId, setSwipedCategoryId] = useState<string | null>(null);
+  const categorySwipeStart = useRef<{ id: string; x: number; y: number; pointerId?: number } | null>(null);
+  const categorySwipeMoved = useRef(false);
+  const [categoryEditMode, setCategoryEditMode] = useState(false);
+  const [categoryOrder, setCategoryOrder] = useState<string[]>(() => categories.map((category) => category.id));
+  const [selectedCategoryIds, setSelectedCategoryIds] = useState<string[]>([]);
+  const [draggedCategoryId, setDraggedCategoryId] = useState<string | null>(null);
   const [showAddItem, setShowAddItem] = useState(false);
+  useEffect(() => { setCategoryOrder(categories.map((category) => category.id)); }, [categories]);
+  const orderedCategories = categoryOrder.map((id) => categories.find((category) => category.id === id)).filter((category): category is DriveCategory => Boolean(category));
   useEffect(() => {
     try {
       const savedView = localStorage.getItem("tow1:view") as "list" | "grid" | null;
@@ -191,7 +203,7 @@ export default function DriveWorkspace({ items, parent, trash, stats, categories
   }, []);
   const visibleItems = useMemo(() => items
     .filter((item) => item.name.toLowerCase().includes(query.toLowerCase()))
-    .sort((a, b) => sortMode === "name" ? a.name.localeCompare(b.name, "zh-CN") : sortMode === "updated" ? Date.parse(b.updated_at) - Date.parse(a.updated_at) : Date.parse(a.created_at) - Date.parse(b.created_at)), [items, query, sortMode]);
+    .sort((a, b) => a.is_pinned !== b.is_pinned ? Number(b.is_pinned) - Number(a.is_pinned) : sortMode === "name" ? a.name.localeCompare(b.name, "zh-CN") : sortMode === "updated" ? Date.parse(b.updated_at) - Date.parse(a.updated_at) : Date.parse(a.created_at) - Date.parse(b.created_at)), [items, query, sortMode]);
   const remainingBytes = stats.quotaBytes === null ? null : Math.max(0, stats.quotaBytes - stats.used);
   const usedPercent = stats.quotaBytes ? Math.min(100, Math.round(stats.used / stats.quotaBytes * 100)) : null;
 
@@ -419,10 +431,10 @@ export default function DriveWorkspace({ items, parent, trash, stats, categories
       {sidebarOpen ? <button className="sidebar-scrim" aria-label="关闭侧栏" onClick={() => setSidebarOpen(false)} /> : null}
       <aside className={sidebarOpen ? "sidebar sidebar-open" : "sidebar"}>
         <Link className="brand" href="/" aria-label="返回首页"><span className="brand-mark small"><Cloud size={20} /></span><span>Tow1</span></Link>
-        <nav>
+        <nav onClick={(event) => { const link = (event.target as HTMLElement).closest<HTMLAnchorElement>('a.category-item'); if (!link || swipedCategoryId) return; event.preventDefault(); router.push(link.href); }}>
           <Link className={!trash ? "nav-item active" : "nav-item"} href="/"><Home size={18} />我的文件</Link>
-          <div className="category-heading"><span>分类</span><button className="text-button" onClick={() => setShowCategory(true)}>添加</button></div>
-          {categories.map((category) => <Link className="nav-item category-item" href={`/?category=${category.id}`} key={category.id}><i style={{ background: category.color }} />{category.name}</Link>)}
+          <div className="category-heading"><span>分类</span><div className="category-heading-actions"><button className="icon-button category-tool-button" title="添加分类" aria-label="添加分类" onClick={() => setShowCategory(true)}><Plus size={15} /></button><button className="icon-button category-tool-button" title={categoryEditMode ? "完成调整" : "调整分类"} aria-label={categoryEditMode ? "完成调整" : "调整分类"} onClick={() => { setCategoryEditMode((value) => !value); setSelectedCategoryIds([]); setSwipedCategoryId(null); }}>{categoryEditMode ? <Check size={15} /> : <SlidersHorizontal size={15} />}</button></div></div>
+          {categoryEditMode ? <form className="category-batch-form" action={async (formData) => { await batchDeleteCategoriesAction(formData); setCategoryEditMode(false); setSelectedCategoryIds([]); }}><div className="category-edit-hint">拖动标签调整顺序</div>{orderedCategories.map((category) => <div className="category-row category-edit-row" draggable onDragStart={() => setDraggedCategoryId(category.id)} onDragOver={(event) => event.preventDefault()} onDrop={() => { if (!draggedCategoryId || draggedCategoryId === category.id) return; setCategoryOrder((current) => { const next = [...current]; const from = next.indexOf(draggedCategoryId); const to = next.indexOf(category.id); next.splice(from, 1); next.splice(to, 0, draggedCategoryId); return next; }); setDraggedCategoryId(null); }} key={category.id}><label className="category-check"><input type="checkbox" name="categoryId" value={category.id} checked={selectedCategoryIds.includes(category.id)} onChange={(event) => setSelectedCategoryIds((current) => event.target.checked ? [...current, category.id] : current.filter((id) => id !== category.id))} /><i style={{ background: category.color }} />{category.name}</label><span className="category-drag-handle" title="拖动排序" aria-label="拖动排序"><GripVertical size={16} /></span></div>)}<div className="category-edit-actions"><button type="button" className="text-button" onClick={() => setCategoryEditMode(false)}>取消</button><button type="button" className="secondary-button" onClick={async () => { const formData = new FormData(); formData.set("order", JSON.stringify(categoryOrder)); await reorderCategoriesAction(formData); setCategoryEditMode(false); }}>保存排序</button><button className="danger-button" disabled={!selectedCategoryIds.length}>删除选中</button></div></form> : orderedCategories.map((category) => <div className={swipedCategoryId === category.id ? "category-row swiped" : "category-row"} key={category.id} onPointerDown={(event) => { categorySwipeMoved.current = false; categorySwipeStart.current = { id: category.id, x: event.clientX, y: event.clientY, pointerId: event.pointerId }; }} onPointerMove={(event) => { const start = categorySwipeStart.current; if (!start || start.id !== category.id || start.pointerId !== event.pointerId) return; const dx = event.clientX - start.x; const dy = event.clientY - start.y; if (Math.abs(dx) > 18 && Math.abs(dx) > Math.abs(dy)) { categorySwipeMoved.current = true; if (dx < 0) event.preventDefault(); } }} onPointerUp={(event) => { const start = categorySwipeStart.current; categorySwipeStart.current = null; if (!start || start.id !== category.id || start.pointerId !== event.pointerId) return; const dx = event.clientX - start.x; const dy = event.clientY - start.y; if (Math.abs(dx) > 45 && Math.abs(dx) > Math.abs(dy)) setSwipedCategoryId(dx < 0 ? category.id : null); }}><Link className="nav-item category-item" href={`/?category=${category.id}`} onClick={(event) => { if (swipedCategoryId === category.id) { event.preventDefault(); setSwipedCategoryId(null); } }}><i style={{ background: category.color }} />{category.name}</Link><div className="category-actions" onClick={(event) => event.stopPropagation()}><form action={toggleCategoryPinnedAction}><input type="hidden" name="id" value={category.id} /><button title={category.is_pinned ? "取消置顶分类" : "置顶分类"}>{category.is_pinned ? <PinOff size={15} /> : <Pin size={15} />}</button></form><form action={deleteCategoryAction}><input type="hidden" name="id" value={category.id} /><button className="danger-icon" title="删除分类"><Trash2 size={15} /></button></form></div></div>)}
         </nav>
         <div className="sidebar-bottom">
         <Link className={trash ? "nav-item active" : "nav-item"} href="/?view=trash"><Trash2 size={18} />回收站</Link>
@@ -463,8 +475,44 @@ export default function DriveWorkspace({ items, parent, trash, stats, categories
             <div className={viewMode === "list" ? "file-list" : "file-grid"}>
               {visibleItems.map((item) => (
                 <article
-                  className="file-card"
+                  className={swipedItemId === item.id ? "file-card swiped" : "file-card"}
                   key={item.id}
+                  onTouchStart={(event) => { swipeStart.current = { id: item.id, x: event.touches[0].clientX, y: event.touches[0].clientY }; }}
+                  onTouchMove={(event) => {
+                    const start = swipeStart.current;
+                    if (!start || start.id !== item.id) return;
+                    const dx = event.touches[0].clientX - start.x;
+                    const dy = event.touches[0].clientY - start.y;
+                    if (Math.abs(dx) > Math.abs(dy) && dx < -18) event.preventDefault();
+                  }}
+                  onTouchEnd={(event) => {
+                    const start = swipeStart.current;
+                    swipeStart.current = null;
+                    if (!start || start.id !== item.id) return;
+                    const dx = event.changedTouches[0].clientX - start.x;
+                    const dy = event.changedTouches[0].clientY - start.y;
+                    if (Math.abs(dx) > 55 && Math.abs(dx) > Math.abs(dy)) setSwipedItemId(dx < 0 ? item.id : null);
+                  }}
+                  onPointerDown={(event) => {
+                    swipeMoved.current = false;
+                    swipeStart.current = { id: item.id, x: event.clientX, y: event.clientY, pointerId: event.pointerId };
+                  }}
+                  onPointerMove={(event) => {
+                    const start = swipeStart.current;
+                    if (!start || start.id !== item.id || start.pointerId !== event.pointerId) return;
+                    const dx = event.clientX - start.x;
+                    const dy = event.clientY - start.y;
+                    if (Math.abs(dx) > 18 && Math.abs(dx) > Math.abs(dy)) { swipeMoved.current = true; if (dx < 0) event.preventDefault(); }
+                  }}
+                  onPointerUp={(event) => {
+                    const start = swipeStart.current;
+                    swipeStart.current = null;
+                    if (!start || start.id !== item.id || start.pointerId !== event.pointerId) return;
+                    const dx = event.clientX - start.x;
+                    const dy = event.clientY - start.y;
+                    if (Math.abs(dx) > 55 && Math.abs(dx) > Math.abs(dy)) setSwipedItemId(dx < 0 ? item.id : null);
+                  }}
+                  onClick={(event) => { if ((event.target as HTMLElement).closest('.item-actions,.swipe-actions')) return; if (swipedItemId && swipedItemId !== item.id) { setSwipedItemId(null); return; } if (item.kind === 'folder' && !trash) router.push(`/?folder=${item.id}`); }}
                   onMouseEnter={(event) => {
                     if (!isVideo(item) || trash) return;
                     event.currentTarget.querySelector("video")?.play().catch(() => undefined);
@@ -486,17 +534,19 @@ export default function DriveWorkspace({ items, parent, trash, stats, categories
                     </div>
                   )}
                   <div className="file-info"><strong title={item.name}>{item.name}</strong><span>{item.kind === "folder" ? "文件夹" : formatBytes(item.size_bytes)}</span><small>创建于 {new Date(item.created_at).toLocaleString("zh-CN")} · 修改于 {new Date(item.updated_at).toLocaleString("zh-CN")}</small></div>
-                  <div className="item-actions">
+                  <div className="item-actions" onClick={(event) => event.stopPropagation()} onMouseDown={(event) => event.stopPropagation()} onPointerDown={(event) => event.stopPropagation()}>
                     {trash ? (
                       <>
                         <form action={restoreItemAction}><input type="hidden" name="id" value={item.id} /><button title="恢复"><ArchiveRestore size={17} /></button></form>
                         <form action={permanentlyDeleteItemAction}><input type="hidden" name="id" value={item.id} /><button className="danger-icon" title="永久删除" onClick={(event) => { if (!confirm(`永久删除“${item.name}”？这个操作不能撤销。`)) event.preventDefault(); }}><Trash2 size={17} /></button></form>
                       </>
                     ) : <>
+                      <form action={toggleItemPinnedAction}><input type="hidden" name="id" value={item.id} /><button title={item.is_pinned ? "取消置顶" : "置顶"}><>{item.is_pinned ? <PinOff size={17} /> : <Pin size={17} />}</></button></form>
                       {item.kind === "file" ? <a href={`/api/files/${item.id}/download`} title="下载"><Download size={17} /></a> : null}
                       {category ? <form action={removeCategoryItemAction}><input type="hidden" name="categoryId" value={category.id} /><input type="hidden" name="itemId" value={item.id} /><button title="从分类移除"><X size={17} /></button></form> : null}<button title="更多" onClick={() => { setCoverError(""); setRenaming(item); }}><MoreHorizontal size={18} /></button>
-                    </>}
+                      </>}
                   </div>
+                  {!trash ? <div className="swipe-actions" aria-label="快捷操作" onClick={(event) => event.stopPropagation()} onMouseDown={(event) => event.stopPropagation()} onPointerDown={(event) => event.stopPropagation()}><form action={toggleItemPinnedAction}><input type="hidden" name="id" value={item.id} /><button title={item.is_pinned ? "取消置顶" : "置顶"}>{item.is_pinned ? <PinOff size={17} /> : <Pin size={17} />}</button></form><form action={trashItemAction}><input type="hidden" name="id" value={item.id} /><button className="danger-icon" title="移入回收站"><Trash2 size={17} /></button></form></div> : null}
                 </article>
               ))}
             </div>

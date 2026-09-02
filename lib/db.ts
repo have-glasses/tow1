@@ -15,6 +15,7 @@ export type DriveItem = {
   created_at: string;
   updated_at: string;
   trashed_at: string | null;
+  is_pinned: boolean;
 };
 
 export type DriveShare = {
@@ -28,7 +29,7 @@ export type DriveShare = {
   last_accessed_at: string | null;
   created_at: string;
 };
-export type DriveCategory = { id: string; name: string; color: string; created_at: string };
+export type DriveCategory = { id: string; name: string; color: string; created_at: string; is_pinned: boolean; sort_order: number };
 
 export type DriveUploadSession = {
   item_id: string;
@@ -75,6 +76,9 @@ async function ensureSchema() {
       if (!itemColumns.rows.some((column) => String(column.name) === "cover_storage_key")) {
         await db.execute("ALTER TABLE drive_items ADD COLUMN cover_storage_key TEXT");
       }
+      if (!itemColumns.rows.some((column) => String(column.name) === "is_pinned")) {
+        await db.execute("ALTER TABLE drive_items ADD COLUMN is_pinned INTEGER NOT NULL DEFAULT 0");
+      }
       await db.execute(`CREATE TABLE IF NOT EXISTS drive_shares (
         id TEXT PRIMARY KEY,
         item_id TEXT NOT NULL,
@@ -105,6 +109,9 @@ async function ensureSchema() {
       )`);
       await db.execute("CREATE INDEX IF NOT EXISTS idx_drive_upload_sessions_updated ON drive_upload_sessions(updated_at)");
       await db.execute(`CREATE TABLE IF NOT EXISTS drive_categories (id TEXT PRIMARY KEY, name TEXT NOT NULL, color TEXT NOT NULL, created_at TEXT NOT NULL)`);
+      const categoryColumns = await db.execute("PRAGMA table_info(drive_categories)");
+      if (!categoryColumns.rows.some((column) => String(column.name) === "is_pinned")) await db.execute("ALTER TABLE drive_categories ADD COLUMN is_pinned INTEGER NOT NULL DEFAULT 0");
+      if (!categoryColumns.rows.some((column) => String(column.name) === "sort_order")) await db.execute("ALTER TABLE drive_categories ADD COLUMN sort_order INTEGER NOT NULL DEFAULT 0");
       await db.execute(`CREATE TABLE IF NOT EXISTS drive_category_items (category_id TEXT NOT NULL, item_id TEXT NOT NULL, created_at TEXT NOT NULL, PRIMARY KEY (category_id,item_id))`);
       await db.execute(`WITH RECURSIVE trashed_descendants(id, trashed_at) AS (
         SELECT id, trashed_at FROM drive_items WHERE status = 'trashed'
@@ -124,14 +131,17 @@ async function ensureSchema() {
   return getClient();
 }
 
-export async function listCategories() { const db = await ensureSchema(); const result = await db.execute("SELECT * FROM drive_categories ORDER BY created_at ASC"); return result.rows.map((row) => ({ id: String(row.id), name: String(row.name), color: String(row.color), created_at: String(row.created_at) })); }
-export async function getCategory(id: string) { const db = await ensureSchema(); const result = await db.execute({ sql: "SELECT * FROM drive_categories WHERE id = ? LIMIT 1", args: [id] }); const row = result.rows[0]; return row ? { id: String(row.id), name: String(row.name), color: String(row.color), created_at: String(row.created_at) } : null; }
-export async function listCategoryItems(categoryId: string) { const db = await ensureSchema(); const result = await db.execute({ sql: "SELECT i.* FROM drive_category_items c JOIN drive_items i ON i.id=c.item_id WHERE c.category_id=? AND i.status='active' ORDER BY i.created_at ASC", args: [categoryId] }); return result.rows.map((row) => rowToItem(row as unknown as Record<string, unknown>)); }
+export async function listCategories() { const db = await ensureSchema(); const result = await db.execute("SELECT * FROM drive_categories ORDER BY is_pinned DESC, sort_order ASC, created_at ASC"); return result.rows.map((row) => ({ id: String(row.id), name: String(row.name), color: String(row.color), created_at: String(row.created_at), is_pinned: Number(row.is_pinned || 0) === 1, sort_order: Number(row.sort_order || 0) })); }
+export async function getCategory(id: string) { const db = await ensureSchema(); const result = await db.execute({ sql: "SELECT * FROM drive_categories WHERE id = ? LIMIT 1", args: [id] }); const row = result.rows[0]; return row ? { id: String(row.id), name: String(row.name), color: String(row.color), created_at: String(row.created_at), is_pinned: Number(row.is_pinned || 0) === 1, sort_order: Number(row.sort_order || 0) } : null; }
+export async function listCategoryItems(categoryId: string) { const db = await ensureSchema(); const result = await db.execute({ sql: "SELECT i.* FROM drive_category_items c JOIN drive_items i ON i.id=c.item_id WHERE c.category_id=? AND i.status='active' ORDER BY i.is_pinned DESC, i.created_at ASC", args: [categoryId] }); return result.rows.map((row) => rowToItem(row as unknown as Record<string, unknown>)); }
 export async function addCategoryItem(categoryId: string, itemId: string) { const db = await ensureSchema(); await db.execute({ sql: "INSERT OR IGNORE INTO drive_category_items (category_id,item_id,created_at) VALUES (?,?,?)", args: [categoryId,itemId,new Date().toISOString()] }); }
 export async function removeCategoryItem(categoryId: string, itemId: string) { const db = await ensureSchema(); await db.execute({ sql: "DELETE FROM drive_category_items WHERE category_id=? AND item_id=?", args: [categoryId,itemId] }); }
 export async function listItemCategoryIds(itemId: string) { const db = await ensureSchema(); const result = await db.execute({ sql: "SELECT category_id FROM drive_category_items WHERE item_id=?", args: [itemId] }); return result.rows.map((row) => String(row.category_id)); }
 export async function setItemCategories(itemId: string, categoryIds: string[]) { const db = await ensureSchema(); await db.execute({ sql: "DELETE FROM drive_category_items WHERE item_id=?", args: [itemId] }); for (const categoryId of categoryIds.filter(Boolean)) await db.execute({ sql: "INSERT OR IGNORE INTO drive_category_items (category_id,item_id,created_at) VALUES (?,?,?)", args: [categoryId,itemId,new Date().toISOString()] }); }
 export async function createCategory(id: string, name: string, color: string) { const db = await ensureSchema(); await db.execute({ sql: "INSERT INTO drive_categories (id,name,color,created_at) VALUES (?,?,?,?)", args: [id,name,color,new Date().toISOString()] }); }
+export async function toggleCategoryPinned(id: string) { const db = await ensureSchema(); await db.execute({ sql: "UPDATE drive_categories SET is_pinned = CASE WHEN is_pinned = 1 THEN 0 ELSE 1 END WHERE id = ?", args: [id] }); }
+export async function deleteCategory(id: string) { const db = await ensureSchema(); await db.execute({ sql: "DELETE FROM drive_category_items WHERE category_id = ?", args: [id] }); await db.execute({ sql: "DELETE FROM drive_categories WHERE id = ?", args: [id] }); }
+export async function reorderCategories(ids: string[]) { const db = await ensureSchema(); for (const [index, id] of ids.entries()) await db.execute({ sql: "UPDATE drive_categories SET sort_order = ? WHERE id = ?", args: [index, id] }); }
 
 function rowToItem(row: Record<string, unknown>) {
   return {
@@ -146,7 +156,8 @@ function rowToItem(row: Record<string, unknown>) {
     status: String(row.status) as DriveItem["status"],
     created_at: String(row.created_at),
     updated_at: String(row.updated_at),
-    trashed_at: row.trashed_at == null ? null : String(row.trashed_at)
+    trashed_at: row.trashed_at == null ? null : String(row.trashed_at),
+    is_pinned: Number(row.is_pinned || 0) === 1
   };
 }
 
@@ -161,8 +172,8 @@ export async function listItems(parentId: string | null, trash = false) {
         args: []
       })
     : parentId
-      ? await db.execute({ sql: "SELECT * FROM drive_items WHERE parent_id = ? AND status = 'active' ORDER BY kind DESC, name COLLATE NOCASE", args: [parentId] })
-      : await db.execute({ sql: "SELECT * FROM drive_items WHERE parent_id IS NULL AND status = 'active' ORDER BY kind DESC, name COLLATE NOCASE", args: [] });
+      ? await db.execute({ sql: "SELECT * FROM drive_items WHERE parent_id = ? AND status = 'active' ORDER BY is_pinned DESC, kind DESC, name COLLATE NOCASE", args: [parentId] })
+      : await db.execute({ sql: "SELECT * FROM drive_items WHERE parent_id IS NULL AND status = 'active' ORDER BY is_pinned DESC, kind DESC, name COLLATE NOCASE", args: [] });
   return result.rows.map((row) => rowToItem(row as unknown as Record<string, unknown>));
 }
 
@@ -255,6 +266,11 @@ export async function completeFile(id: string) {
 export async function renameItem(id: string, name: string) {
   const db = await ensureSchema();
   await db.execute({ sql: "UPDATE drive_items SET name = ?, updated_at = ? WHERE id = ? AND status = 'active'", args: [name, new Date().toISOString(), id] });
+}
+
+export async function toggleItemPinned(id: string) {
+  const db = await ensureSchema();
+  await db.execute({ sql: "UPDATE drive_items SET is_pinned = CASE WHEN is_pinned = 1 THEN 0 ELSE 1 END, updated_at = ? WHERE id = ? AND status = 'active'", args: [new Date().toISOString(), id] });
 }
 
 export async function setFolderCover(id: string, storageKey: string | null) {
